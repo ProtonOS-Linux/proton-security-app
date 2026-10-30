@@ -1,10 +1,17 @@
-# Builds the Debian package for a version tag (v1.2.3) and publishes it as a
-# GitHub release with its SHA-256 checksum. See docs/PACKAGING.md.
+# Builds the Debian package for a version (v1.2.3) and attaches it, with its SHA-256
+# checksum, to the GitHub release. Runs when a version tag is pushed, or when a release is
+# published on GitHub's website (Releases → Draft a new release). See docs/PACKAGING.md.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  release:
+    types: [published]
+
+env:
+  # The version tag, whichever way the workflow was started.
+  TAG: ${{ github.event.release.tag_name || github.ref_name }}
 
 permissions:
   contents: read
@@ -20,12 +27,14 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates git
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Check the tag matches Cargo.toml
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml" >&2
+          if [ "v$version" != "$TAG" ]; then
+            echo "Tag $TAG does not match version $version in Cargo.toml" >&2
             exit 1
           fi
       - name: Build
@@ -54,16 +63,22 @@ jobs:
         with:
           name: release
           path: dist
-      - name: Create the GitHub release
+      - name: Create or update the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           # Release notes: this version's section of CHANGELOG.md.
           awk -v v="$version" '
             $0 ~ "^## \\[" v "\\]" { found = 1; next }
             found && /^## \[/       { exit }
             found                  { print }
           ' CHANGELOG.md > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/*.deb dist/SHA256SUMS \
-            --title "Proton Security $version" --notes-file notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Published from the website: attach the files and fill in the notes.
+            gh release upload "$TAG" dist/*.deb dist/SHA256SUMS --clobber
+            gh release edit "$TAG" --title "Proton Security $version" --notes-file notes.md
+          else
+            gh release create "$TAG" dist/*.deb dist/SHA256SUMS \
+              --title "Proton Security $version" --notes-file notes.md
+          fi

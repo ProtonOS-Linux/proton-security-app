@@ -85,7 +85,11 @@ User data lives in each user's home folder, so nothing personal ends up in the I
 3. Describe the changes in `CHANGELOG.md`.
 4. Run the checks from [DEVELOPMENT.md](DEVELOPMENT.md#before-you-send-a-change) and `cargo deb`; test an
    upgrade from the previous `.deb`.
-5. Commit, then tag and push: `git tag v0.4.6 && git push origin v0.4.6`.
+5. Commit and push to `main`, then publish the release, either way:
+   - **On GitHub's website:** *Releases → Draft a new release*, type the tag (`v0.4.8`) and choose
+     *Create new tag on publish*, target `main`, then *Publish release*;
+   - **or from a terminal:** `git tag v0.4.8 && git push origin v0.4.8`.
 
-The [release workflow](../.github/workflows/release.yml) builds the `.deb` from the tag and attaches it to a
-GitHub release, together with its SHA-256 checksum.
+The [release workflow](../.github/workflows/release.yml) then builds the `.deb` from that tag (it checks the tag
+matches the version in `Cargo.toml`) and attaches it to the release with its SHA-256 checksum and the notes from
+`CHANGELOG.md`.
