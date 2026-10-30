@@ -26,7 +26,9 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates git shellcheck
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Lints use a fixed Rust version, so a new Rust release (with new lints) never breaks CI
+      # by surprise. Update it on purpose, fixing any new warnings in the same change.
+      - uses: dtolnay/rust-toolchain@1.97
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2

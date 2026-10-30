@@ -42,7 +42,9 @@ shellcheck packaging/proton-security-helper debian/*   # if you have shellcheck
 ```
 
 The same commands run in CI on every push and pull request
-([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)).
+([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)). CI runs the lints with **Rust 1.97** (pinned, so new
+Rust releases don't add warnings by surprise) and checks that the code still builds with 1.95, the minimum
+version.
 
 ## Unit tests
 
