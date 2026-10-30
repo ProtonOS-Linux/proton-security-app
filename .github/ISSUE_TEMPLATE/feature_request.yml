@@ -1,0 +1,22 @@
+name: Feature request
+description: Suggest an improvement or a new check.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation, ideally from the point of view of someone new to Linux.
+      placeholder: When I plug in my phone, I'm not sure if it's safe to copy files from it…
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What could Proton Security do?
+      description: Your idea for a solution. Screens from other apps (like Windows Security) are welcome.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything else?
+      description: Other approaches you thought of, or links that help.

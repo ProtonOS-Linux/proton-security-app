@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata: lets KDE Discover / GNOME Software list Proton Security. -->
+<component type="desktop-application">
+  <id>org.protonos.ProtonSecurity</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Proton Security</name>
+  <summary>Check the security and health of your computer</summary>
+  <description>
+    <p>
+      Proton Security shows the security status of your computer at a glance, in the style of
+      Windows Security, and lets you fix problems with one click.
+    </p>
+    <ul>
+      <li>Security at a glance: antivirus, security updates, package and Flatpak updates, firewall, account protection, device security, performance and health, restore points and file backup</li>
+      <li>Virus and threat protection with ClamAV: quick, full and custom scans, quarantine, a daily automatic scan, and automatic scanning of new downloads and USB drives</li>
+      <li>Firewall: see network connections, allow or block them, and read the firewall log</li>
+      <li>Account protection: screen lock, automatic sign-in and password checks</li>
+      <li>Device security: Secure Boot, TPM and disk encryption</li>
+      <li>Performance and health: pending restarts, disk space, disk health and battery</li>
+      <li>App permissions: see and limit what Flatpak apps can access</li>
+      <li>Restore points, file backup status, and a device manager with driver actions</li>
+      <li>Alerts for new USB keyboards, network adapters and drives</li>
+      <li>For IT: a company policy file and an exportable security report</li>
+    </ul>
+  </description>
+  <url type="homepage">https://www.protonos.org</url>
+  <url type="bugtracker">https://github.com/ProtonOS-Linux/proton-security-app/issues</url>
+  <url type="vcs-browser">https://github.com/ProtonOS-Linux/proton-security-app</url>
+  <url type="contribute">https://github.com/ProtonOS-Linux/proton-security-app/blob/main/CONTRIBUTING.md</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Security at a glance</caption>
+      <image type="source" width="1366" height="724">https://raw.githubusercontent.com/ProtonOS-Linux/proton-security-app/main/docs/screenshots/home.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Virus and threat protection</caption>
+      <image type="source" width="1366" height="724">https://raw.githubusercontent.com/ProtonOS-Linux/proton-security-app/main/docs/screenshots/antivirus.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Device security with disk encryption tools</caption>
+      <image type="source" width="1366" height="724">https://raw.githubusercontent.com/ProtonOS-Linux/proton-security-app/main/docs/screenshots/device-security.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Performance and health</caption>
+      <image type="source" width="1366" height="724">https://raw.githubusercontent.com/ProtonOS-Linux/proton-security-app/main/docs/screenshots/health.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Dark theme</caption>
+      <image type="source" width="1366" height="724">https://raw.githubusercontent.com/ProtonOS-Linux/proton-security-app/main/docs/screenshots/home-dark.png</image>
+    </screenshot>
+  </screenshots>
+  <launchable type="desktop-id">proton-security.desktop</launchable>
+  <icon type="stock">proton-security</icon>
+  <categories>
+    <category>System</category>
+    <category>Security</category>
+  </categories>
+  <keywords>
+    <keyword>antivirus</keyword>
+    <keyword>firewall</keyword>
+    <keyword>security</keyword>
+    <keyword>restore</keyword>
+    <keyword>drivers</keyword>
+  </keywords>
+  <developer id="org.protonos">
+    <name>Proton OS</name>
+  </developer>
+  <pkgname>proton-security</pkgname>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>proton-security</binary>
+  </provides>
+  <releases>
+    <release version="0.4.8" date="2026-10-30">
+      <description>
+        <p>New "Add a rule" button on the Firewall page, and the Device manager no longer flickers.</p>
+      </description>
+    </release>
+    <release version="0.4.7" date="2026-10-29" urgency="high">
+      <description>
+        <p>Security fixes: crafted file names can no longer make a scan blame or skip the wrong file, and changes that lower protection always ask for the administrator password.</p>
+      </description>
+    </release>
+    <release version="0.4.6" date="2026-10-29">
+      <description>
+        <p>First open-source release (GPL-3.0-or-later). Safer encryption header backup, fully documented source code.</p>
+      </description>
+    </release>
+    <release version="0.4.5" date="2026-10-29">
+      <description>
+        <p>Protection history updates live with USB drive and download checks. New magenta app icon.</p>
+      </description>
+    </release>
+    <release version="0.4.4" date="2026-10-29">
+      <description>
+        <p>The tray icon now follows changes made outside the app within seconds: removing or installing ClamAV, stopping automatic security updates, turning the firewall off or on. New Power management settings link on Account protection.</p>
+      </description>
+    </release>
+    <release version="0.4.3" date="2026-10-29">
+      <description>
+        <p>The tray icon and the window now update within seconds when screen locking or sign-in settings change outside the app, such as the battery menu switch.</p>
+      </description>
+    </release>
+    <release version="0.4.2" date="2026-10-29">
+      <description>
+        <p>Administrator accounts get a neutral notice icon. Snapper and Timeshift snapshots of the home folder no longer count as a file backup.</p>
+      </description>
+    </release>
+    <release version="0.4.1" date="2026-10-28">
+      <description>
+        <p>Disk encryption tools (recovery key, change disk password, header backup), automatic USB drive scanning, visible download checks, restart reminder after 15 days with a save-your-work confirmation, bad sector reporting, and screen lock detection for the battery menu switch.</p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-10-28">
+      <description>
+        <p>New pages: Account protection, Device security, Performance and health, App permissions. File backup status, download scanning, USB alerts, company policy file and security report.</p>
+      </description>
+    </release>
+    <release version="0.3.2" date="2026-10-28">
+      <description>
+        <p>Fits small screens such as 1366x768. Proton OS information in the menu.</p>
+      </description>
+    </release>
+    <release version="0.3.1" date="2026-10-27">
+      <description>
+        <p>Automatic security updates follows the unattended-upgrades service. Uninstall driver removes the driver from the system.</p>
+      </description>
+    </release>
+    <release version="0.3.0" date="2026-10-27">
+      <description>
+        <p>New Firewall page with connections, allow/block and the firewall log. Driver actions fixed. No background service runs as administrator.</p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-10-27"/>
+    <release version="0.1.0" date="2026-10-26"/>
+  </releases>
+</component>

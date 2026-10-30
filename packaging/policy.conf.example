@@ -1,0 +1,32 @@
+# Proton Security company policy
+#
+# Full reference: docs/POLICY.md in the source repository.
+#
+# Copy this file to /etc/proton-security/policy.conf (owned by root, mode 0644)
+# to apply it to every user of this computer. Remove a line to use the default.
+# Changes apply the next time Proton Security (and its tray icon) starts.
+
+# Name shown in the app as "Managed by <organization>".
+#organization = Acme Corp
+
+# Force user settings: force-on, force-off, or leave unset to let users choose.
+#daily_scan = force-on          # daily automatic quick scan
+#scan_downloads = force-on      # scan new files in Downloads
+#usb_alerts = force-on          # notify when a new USB keyboard/network/storage device appears
+#scan_usb = force-on            # quick-scan USB drives and memory cards when they are opened
+
+# Let users change these (yes/no, default yes).
+#allow_driver_changes = no              # Update / Reinstall / Uninstall driver
+#allow_firewall_changes = no            # Allow / Block / Undo on the Firewall page
+#allow_app_permission_changes = no      # Restrict / Reset on the App permissions page
+
+# Requirements that turn the tiles yellow when not met (default no, except backup).
+#require_disk_encryption = yes
+#require_secure_boot = yes
+#require_backup = no                    # default yes: warn when personal files are not backed up
+
+# Longest screen-lock delay in minutes before Account protection warns (default 15).
+#max_screen_lock_minutes = 10
+
+# Hide pages: antivirus, firewall, account, device-security, health, apps, restore, devices
+#hide_pages = devices

@@ -1,0 +1,11 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Runs before the package is unpacked (install or upgrade).
+set -e
+# Upgrading from 0.2.0: stop and disable its background service while the
+# unit files still exist (0.3.0 has no background service running as root).
+if [ "$1" = upgrade ] && [ -d /run/systemd/system ]; then
+    systemctl disable --now proton-security-snapshots.path proton-security-snapshots.timer >/dev/null 2>&1 || true
+    systemctl stop proton-security-snapshots.service >/dev/null 2>&1 || true
+fi
+exit 0

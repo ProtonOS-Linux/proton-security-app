@@ -1,0 +1,36 @@
+[Desktop Entry]
+Type=Application
+Name=Proton Security
+GenericName=Security Center
+Comment=Check updates, firewall, antivirus, restore points and devices
+Exec=proton-security
+Icon=proton-security
+Terminal=false
+Categories=System;Security;
+Keywords=security;antivirus;virus;clamav;firewall;updates;restore;snapper;snapshot;backup;device;driver;hardware;account;password;encryption;permissions;report;
+StartupWMClass=proton-security
+Actions=Antivirus;Firewall;Account;Health;Restore;Devices;
+
+[Desktop Action Antivirus]
+Name=Virus & threat protection
+Exec=proton-security --antivirus
+
+[Desktop Action Firewall]
+Name=Firewall & network
+Exec=proton-security --firewall
+
+[Desktop Action Account]
+Name=Account protection
+Exec=proton-security --account
+
+[Desktop Action Health]
+Name=Performance & health
+Exec=proton-security --health
+
+[Desktop Action Restore]
+Name=Restore & backup
+Exec=proton-security --restore
+
+[Desktop Action Devices]
+Name=Device manager
+Exec=proton-security --devices

@@ -1,0 +1,91 @@
+# Checks every push and pull request: formatting, lints, tests, documentation,
+# shell scripts, and that the Debian package builds.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Format, lint, test, docs
+    runs-on: ubuntu-latest
+    # Build on the distribution Proton OS is based on.
+    container: debian:trixie
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates git shellcheck
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Lints
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test
+      - name: Documentation
+        run: cargo doc --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Shell scripts
+        run: |
+          bash -n packaging/proton-security-helper
+          shellcheck -S warning packaging/proton-security-helper debian/preinst debian/postinst debian/prerm debian/postrm
+
+  msrv:
+    name: Minimum Rust version (1.95)
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates git
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets
+
+  deb:
+    name: Debian package
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    needs: check
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates git appstream desktop-file-utils
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate metadata
+        run: |
+          appstreamcli validate --no-net packaging/org.protonos.ProtonSecurity.metainfo.xml
+          desktop-file-validate packaging/proton-security.desktop packaging/proton-security-tray.desktop
+      - name: Build the package
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb
+      - name: Show the package
+        run: |
+          dpkg-deb --info target/debian/*.deb
+          dpkg-deb --contents target/debian/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proton-security-deb
+          path: target/debian/*.deb
+          if-no-files-found: error

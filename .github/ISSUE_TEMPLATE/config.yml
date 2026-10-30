@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/ProtonOS-Linux/proton-security-app/security/advisories/new
+    about: Please report security problems privately, not as a public issue.
+  - name: Proton OS website
+    url: https://www.protonos.org
+    about: Questions about Proton OS itself.

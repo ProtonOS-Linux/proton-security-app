@@ -1,0 +1,56 @@
+name: Bug report
+description: Something doesn't work, shows the wrong status, or is confusing.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this!
+        **Security problems:** please don't report them here. Use the private
+        [vulnerability report](https://github.com/ProtonOS-Linux/proton-security-app/security/advisories/new) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        I turned off the firewall with `sudo ufw disable`. I expected the Firewall tile to turn yellow,
+        but it stayed green.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Proton Security
+        2. Go to …
+        3. Click …
+  - type: input
+    id: version
+    attributes:
+      label: Proton Security version
+      description: Run `proton-security --version`, or look at the bottom of the side menu.
+      placeholder: Proton Security 0.4.6
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and desktop
+      placeholder: Proton OS 1.0 (Debian 13), KDE Plasma 6.3, Wayland
+    validations:
+      required: true
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: Diagnostics
+      description: |
+        Output of `proton-security --diagnose`. Please remove anything private first
+        (user names, computer name, network addresses).
+      render: text
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Drag images here if they help explain the problem.

@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Runs before the package is removed: closes the app and its tray icon.
+set -e
+case "$1" in
+remove|deconfigure)
+    # Close the tray icons and open windows.
+    # Match the command line: this script's own short name is also "proton-security".
+    pkill -f '^(/usr/bin/)?proton-security( |$)' >/dev/null 2>&1 || true
+    ;;
+esac
+exit 0

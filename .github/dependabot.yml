@@ -1,0 +1,14 @@
+# Weekly pull requests for outdated Rust crates and GitHub Actions.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      egui:
+        patterns: ["egui", "eframe", "egui_extras"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

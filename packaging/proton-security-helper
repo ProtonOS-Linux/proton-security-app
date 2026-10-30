@@ -1,0 +1,757 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Proton OS contributors
+#
+# Proton Security privileged helper.
+#
+# This is the ONLY part of Proton Security that runs as root. The app itself
+# always runs as the signed-in user. When the user clicks a button that needs
+# administrator rights, the app runs:
+#
+#     pkexec /usr/libexec/proton-security/proton-security-helper <command> [arg] [arg2]
+#     pkexec /usr/libexec/proton-security/proton-security-helper-protected <command> [arg]
+#
+# (the second name is the same script, for commands that lower protection; see below)
+#
+# polkit (see org.protonos.security.policy) asks for an administrator password
+# first. This script then:
+#   - accepts only the commands listed in the `case` below (anything else exits 2);
+#   - checks every argument against a strict pattern before using it
+#     (module names, ports, IP addresses, device paths, descriptions);
+#   - never takes passwords on the command line (they come on standard input);
+#   - never writes as root into folders a normal user controls.
+# Output lines starting with "==> " are progress messages shown in the app's
+# task window. Exit codes: 0 = done, 1 = failed, 2 = invalid command or argument.
+set -euo pipefail
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export DEBIAN_FRONTEND=noninteractive
+export LC_ALL=C
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "This helper must run as root (through pkexec)." >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------- two entry points
+# This script is installed twice, with two polkit actions (org.protonos.security.policy):
+#   proton-security-helper            everyday fixes; polkit remembers the password for a few
+#                                     minutes, so several fixes in a row ask once.
+#   proton-security-helper-protected  commands that LOWER protection or touch disk-encryption
+#                                     secrets; polkit asks for the password EVERY time.
+# Each name runs only its own commands, so a remembered password can never be reused for a
+# protected command (not by another program either). Keep this list in sync with
+# PROTECTED_COMMANDS in src/admin.rs (a unit test checks it).
+PROTECTED_COMMANDS="fw-allow-port fw-remove-port fw-unblock-ip av-auto driver-purge driver-reinstall driver-enable load-module luks-add-recovery luks-change-password luks-header-backup snapper-allow-sudo"
+
+is_protected=no
+for c in $PROTECTED_COMMANDS; do
+    [ "$c" = "${1:-}" ] && is_protected=yes
+done
+case "$(basename -- "$0")" in
+    proton-security-helper-protected) role=protected ;;
+    *) role=general ;;
+esac
+if [ "$is_protected" = yes ] && [ "$role" != protected ]; then
+    echo "\"$1\" must be run through proton-security-helper-protected." >&2
+    exit 2
+fi
+if [ "$role" = protected ] && [ "$is_protected" != yes ]; then
+    echo "\"${1:-}\" is not a protected command; use proton-security-helper." >&2
+    exit 2
+fi
+
+# Progress message for the app's task window.
+say() { echo "==> $*"; }
+
+# Install packages without questions, keeping the user's changed config files.
+apt_install() {
+    say "Installing: $*"
+    apt-get update -q || true
+    apt-get install -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
+}
+
+# Exit unless $1 looks like a kernel module name.
+valid_module() {
+    [[ "$1" =~ ^[a-z0-9_-]{1,64}$ ]] || { echo "Invalid module name." >&2; exit 2; }
+}
+
+# Blocklist written by driver-purge for drivers that are part of the kernel.
+DISABLED=/etc/modprobe.d/proton-security-disabled.conf
+
+# Modules that must never be disabled from the GUI (disks, USB, input, filesystems).
+CRITICAL_RE='^(ahci|libahci|libata|ata_.*|pata_.*|sata_.*|nvme|nvme_core|sd_mod|sr_mod|scsi_mod|virtio.*|xhci_.*|ehci_.*|ohci_.*|uhci_hcd|usbcore|usb_common|usbhid|hid|hid_generic|i8042|atkbd|psmouse|btrfs|ext4|xfs|dm_.*|md_mod|raid.*|crypto.*|.*_crypt|mpt3sas|megaraid_sas|mmc_block|sdhci.*|vmd|intel_lpss.*)$'
+
+module_file() {
+    # Path of the module file, empty when built into the kernel or unknown.
+    local f
+    f=$(modinfo -n "$1" 2>/dev/null || true)
+    case "$f" in *builtin*) f="" ;; esac
+    echo "$f"
+}
+
+module_package() {
+    # Debian package that ships the module file (empty if built in / unknown).
+    local f p
+    f=$(module_file "$1")
+    [ -n "$f" ] || return 0
+    for path in "$f" "${f#/usr}" "/usr$f"; do
+        p=$(dpkg -S "$path" 2>/dev/null | head -n1 | cut -d: -f1 || true)
+        if [ -n "$p" ]; then echo "$p"; return 0; fi
+    done
+    return 0
+}
+
+module_firmware_packages() {
+    # Packages that ship the firmware files this module asks for (may be none).
+    local fw base f
+    for fw in $(modinfo -F firmware "$1" 2>/dev/null || true); do
+        for base in /lib/firmware /usr/lib/firmware; do
+            for f in "$base/$fw" "$base/$fw.xz" "$base/$fw.zst"; do
+                if [ -e "$f" ]; then
+                    dpkg -S "$f" 2>/dev/null | cut -d: -f1 | tr ', ' '\n\n' || true
+                fi
+            done
+        done
+    done | { grep -v '^$' || true; } | sort -u
+}
+
+unload_module() {
+    # Unload a module; prints why when it can't be.
+    local holders
+    if ! [ -d "/sys/module/$1" ]; then
+        say "Driver $1 is not loaded."
+        return 0
+    fi
+    if [ ! -e "/sys/module/$1/refcnt" ]; then
+        echo "$1 is built into the kernel and cannot be unloaded." >&2
+        return 1
+    fi
+    # Keep modprobe's error text in a variable (never a fixed file in /tmp,
+    # which another user could prepare in advance).
+    local err
+    if err=$(modprobe -r -- "$1" 2>&1); then
+        say "Driver $1 unloaded."
+        return 0
+    fi
+    holders=$(ls "/sys/module/$1/holders" 2>/dev/null | tr '\n' ' ' || true)
+    echo "Driver $1 could not be unloaded because it is in use${holders:+ by: $holders}." >&2
+    [ -n "$err" ] && echo "$err" >&2
+    return 1
+}
+
+# True when kernel module $1 can drive a device that is in this computer right now: it is one
+# of the modules matching a device's modalias (what the kernel itself would load). Names are
+# compared with "-" and "_" treated the same, as modprobe does.
+module_matches_hardware() {
+    local want="${1//-/_}" alias
+    while IFS= read -r alias; do
+        modprobe -R "$alias" 2>/dev/null || true
+    done < <(find /sys/devices -name modalias -type f -exec cat {} + 2>/dev/null | sort -u) \
+        | tr '-' '_' | grep -qxF -- "$want"
+}
+
+# True when module $1 was disabled by driver-purge (it is in our blocklist).
+module_disabled_by_us() {
+    [ -f "$DISABLED" ] && grep -qx "blacklist $1" "$DISABLED"
+}
+
+# Exit unless $1 is a port number (1-65535).
+valid_port() {
+    [[ "$1" =~ ^[0-9]{1,5}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ] || { echo "Invalid port." >&2; exit 2; }
+}
+
+# Exit unless $1 is tcp or udp.
+valid_proto() {
+    [[ "$1" == tcp || "$1" == udp ]] || { echo "Invalid protocol." >&2; exit 2; }
+}
+
+valid_ip() {
+    # IPv4 or IPv6 address, nothing else (no ranges, no option-like values)
+    if [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || [[ "$1" =~ ^[0-9a-fA-F:]{2,39}$ && "$1" == *:* ]]; then
+        return 0
+    fi
+    echo "Invalid address." >&2
+    exit 2
+}
+
+# Exit unless UFW is installed.
+need_ufw() {
+    command -v ufw >/dev/null || { echo "UFW is not installed. Turn on the firewall first." >&2; exit 1; }
+}
+
+ufw_add_top() {
+    # Put a rule before existing ones so it wins; fall back to appending.
+    ufw prepend "$@" 2>/dev/null || ufw "$@"
+}
+
+# True when / is a Btrfs filesystem (needed for restore points).
+root_is_btrfs() {
+    [ "$(findmnt -no FSTYPE /)" = "btrfs" ]
+}
+
+# ---------------------------------------------------------------- commands
+cmd="${1:-}"
+arg="${2:-}"
+
+case "$cmd" in
+
+# ---------------------------------------------------------------- updates
+# Install and turn on unattended-upgrades (security updates only, Debian's default).
+enable-security-updates)
+    dpkg -s unattended-upgrades >/dev/null 2>&1 || apt_install unattended-upgrades apt-listchanges
+    say "Turning on daily package list refresh and unattended security upgrades"
+    cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+    systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
+    systemctl enable --now unattended-upgrades.service || true
+    say "Automatic security updates are on."
+    ;;
+
+# Like enable-security-updates, plus regular stable updates and a daily Flatpak update timer.
+enable-auto-updates)
+    "$0" enable-security-updates
+    say "Including regular Debian updates (stable point releases and -updates)"
+    cat > /etc/apt/apt.conf.d/52proton-auto-updates <<'EOF'
+// Added by Proton Security: install all stable updates automatically, not only security fixes.
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename},label=Debian";
+        "origin=Debian,codename=${distro_codename}-updates";
+};
+EOF
+    if command -v flatpak >/dev/null; then
+        say "Adding a daily Flatpak update timer"
+        cat > /etc/systemd/system/proton-flatpak-update.service <<'EOF'
+[Unit]
+Description=Update Flatpak apps and runtimes (Proton Security)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flatpak update --system --noninteractive -y
+ExecStartPost=/usr/bin/flatpak uninstall --system --unused --noninteractive -y
+Nice=10
+IOSchedulingClass=idle
+EOF
+        cat > /etc/systemd/system/proton-flatpak-update.timer <<'EOF'
+[Unit]
+Description=Daily Flatpak update (Proton Security)
+
+[Timer]
+OnBootSec=15min
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+        systemctl daemon-reload
+        systemctl enable --now proton-flatpak-update.timer
+    fi
+    say "Automatic updates are on."
+    ;;
+
+# Install all available updates now (apt, then Flatpak and Snap if present).
+update-now)
+    say "Refreshing package lists"
+    apt-get update
+    say "Installing package updates"
+    apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold --with-new-pkgs upgrade
+    apt-get -y autoremove || true
+    if command -v flatpak >/dev/null; then
+        say "Updating Flatpak apps"
+        flatpak update --system --noninteractive -y || true
+    fi
+    if command -v snap >/dev/null; then
+        say "Refreshing Snap packages"
+        snap refresh || true
+    fi
+    if [ -f /var/run/reboot-required ]; then
+        say "A restart is required to finish installing updates."
+    fi
+    say "Everything is up to date."
+    ;;
+
+# ---------------------------------------------------------------- firewall
+# Turn the firewall on: firewalld if it is installed, otherwise UFW (installed if needed)
+# with "deny incoming, allow outgoing".
+enable-firewall)
+    if systemctl list-unit-files firewalld.service >/dev/null 2>&1 && [ -x /usr/sbin/firewalld ]; then
+        say "Turning on firewalld"
+        systemctl enable --now firewalld
+    else
+        command -v ufw >/dev/null || apt_install ufw
+        say "Setting default policy: deny incoming, allow outgoing"
+        ufw default deny incoming
+        ufw default allow outgoing
+        # Keep printers and file sharing discovery working on the local network.
+        ufw allow 5353/udp comment 'mDNS' >/dev/null || true
+        ufw --force enable
+        systemctl enable --now ufw
+    fi
+    say "Firewall is on."
+    ;;
+
+# ---------------------------------------------------------------- snapper
+# Set up Snapper restore points for / (Btrfs only): config, timers and a first restore point.
+enable-snapper)
+    root_is_btrfs || { echo "The system drive is not Btrfs; Snapper cannot create restore points." >&2; exit 1; }
+    command -v snapper >/dev/null || apt_install snapper
+    if [ ! -f /etc/snapper/configs/root ]; then
+        say "Creating the Snapper configuration for /"
+        remount=0
+        if mountpoint -q /.snapshots; then
+            # A separate @snapshots subvolume is already mounted: let snapper
+            # create its config, then put the existing subvolume back.
+            umount /.snapshots
+            rmdir /.snapshots
+            remount=1
+        fi
+        snapper -c root create-config /
+        if [ "$remount" = 1 ]; then
+            btrfs subvolume delete /.snapshots
+            mkdir /.snapshots
+            mount /.snapshots
+        fi
+        snapper -c root set-config \
+            TIMELINE_CREATE=yes TIMELINE_CLEANUP=yes NUMBER_CLEANUP=yes \
+            NUMBER_LIMIT=10 NUMBER_LIMIT_IMPORTANT=10 \
+            TIMELINE_LIMIT_HOURLY=5 TIMELINE_LIMIT_DAILY=7 TIMELINE_LIMIT_WEEKLY=2 \
+            TIMELINE_LIMIT_MONTHLY=1 TIMELINE_LIMIT_YEARLY=0
+    else
+        snapper -c root set-config TIMELINE_CREATE=yes TIMELINE_CLEANUP=yes
+    fi
+    systemctl enable --now snapper-timeline.timer snapper-cleanup.timer
+    systemctl enable snapper-boot.timer 2>/dev/null || true
+    say "Creating a first restore point"
+    snapper -c root create --description "Restore points turned on" --cleanup-algorithm number --userdata important=yes
+    say "System restore is on."
+    ;;
+
+# Print every restore point as JSON (the list is only readable by root).
+snapper-list)
+    snapper --jsonout list --disable-used-space 2>/dev/null || snapper --jsonout list
+    ;;
+
+# Create a restore point now. <arg> is the description typed by the user (letters, digits,
+# spaces and simple punctuation only, at most 80 characters).
+snapper-create)
+    if [ -z "$arg" ] || [ "${#arg}" -gt 80 ] || ! [[ "$arg" =~ ^[[:alnum:][:space:].,_\(\)/:-]+$ ]]; then
+        echo "Invalid description." >&2
+        exit 2
+    fi
+    say "Creating restore point: $arg"
+    num=$(snapper -c root create --print-number --description "$arg" --cleanup-algorithm number --userdata important=yes)
+    say "Restore point #$num created."
+    ;;
+
+# Let members of the sudo group list restore points without a password from now on.
+snapper-allow-sudo)
+    say "Allowing members of the sudo group to view restore points"
+    for c in /etc/snapper/configs/*; do
+        [ -f "$c" ] || continue
+        snapper -c "$(basename "$c")" set-config ALLOW_GROUPS=sudo SYNC_ACL=yes
+    done
+    say "Done. Members of the sudo group can now see restore points without a password."
+    ;;
+
+# Install Btrfs Assistant, a graphical tool for restoring from restore points.
+install-btrfs-assistant)
+    apt_install btrfs-assistant
+    ;;
+
+# ---------------------------------------------------------------- antivirus
+# Install ClamAV and turn on its automatic definition updates.
+install-clamav)
+    apt_install clamav clamav-freshclam
+    systemctl enable --now clamav-freshclam.service
+    say "ClamAV is installed. Virus definitions will download in the background."
+    ;;
+
+# Download the latest virus definitions now (freshclam is paused meanwhile so they don't clash).
+av-update)
+    was_active=0
+    if systemctl is-active --quiet clamav-freshclam.service; then
+        was_active=1
+        systemctl stop clamav-freshclam.service
+    fi
+    say "Downloading the latest virus definitions"
+    rc=0
+    freshclam --stdout || rc=$?
+    [ "$was_active" = 1 ] && systemctl start clamav-freshclam.service
+    exit $rc
+    ;;
+
+# Turn automatic virus definition updates on or off. <arg> = on | off.
+av-auto)
+    case "$arg" in
+        on)
+            # Debian's freshclam checks several times a day by default, which covers "daily".
+            systemctl enable --now clamav-freshclam.service
+            systemctl restart clamav-freshclam.service
+            say "Daily virus definition updates are on." ;;
+        off)
+            systemctl disable --now clamav-freshclam.service
+            say "Automatic virus definition updates are off." ;;
+        *) echo "Usage: av-auto on|off" >&2; exit 2 ;;
+    esac
+    ;;
+
+# ---------------------------------------------------------------- devices
+# Find and install firmware packages for this computer's hardware (isenkram).
+install-firmware)
+    apt_install isenkram-cli
+    say "Looking for firmware that matches your hardware"
+    isenkram-autoinstall-firmware || true
+    say "Packages that support your hardware:"
+    isenkram-lookup || true
+    say "Restart the computer to use any newly installed firmware."
+    ;;
+
+# Load a kernel driver now and at every start. <arg> = module name.
+load-module)
+    valid_module "$arg"
+    # Only drivers for hardware that is present: loading arbitrary kernel modules would widen
+    # the kernel's attack surface for no benefit.
+    if ! module_matches_hardware "$arg"; then
+        echo "$arg is not a driver for any device in this computer, so it was not loaded." >&2
+        exit 1
+    fi
+    say "Loading driver $arg"
+    modprobe -- "$arg"
+    echo "$arg" >> /etc/modules-load.d/proton-security.conf
+    sort -u -o /etc/modules-load.d/proton-security.conf /etc/modules-load.d/proton-security.conf
+    say "Driver loaded. It will also load automatically at startup."
+    ;;
+
+# ---------------------------------------------------------------- account protection
+# Turn off automatic sign-in (SDDM or LightDM) by commenting out the auto-login user.
+disable-autologin)
+    changed=0
+    for f in /etc/sddm.conf /etc/sddm.conf.d/*.conf /usr/lib/sddm/sddm.conf.d/*.conf; do
+        [ -f "$f" ] || continue
+        if awk '/^\[Autologin\]/{a=1;next} /^\[/{a=0} a && /^User=./{f=1} END{exit !f}' "$f"; then
+            say "Turning off automatic sign-in in $f"
+            # Comment out User= (and Session=) only inside the [Autologin] section.
+            sed -i '/^\[Autologin\]/,/^\[/{s/^\(User=.*\)$/#\1/;s/^\(Session=.*\)$/#\1/}' "$f"
+            changed=1
+        fi
+    done
+    if [ -f /etc/lightdm/lightdm.conf ] && grep -q '^autologin-user=.' /etc/lightdm/lightdm.conf; then
+        sed -i 's/^\(autologin-user=.*\)$/#\1/' /etc/lightdm/lightdm.conf
+        changed=1
+    fi
+    if [ "$changed" = 1 ]; then
+        say "Automatic sign-in is off. You will be asked for your password at the next start."
+    else
+        say "Automatic sign-in was already off."
+    fi
+    ;;
+
+# ---------------------------------------------------------------- disk encryption (LUKS)
+# Disk encryption actions on a LUKS partition. <arg> = the partition (/dev/...).
+# Passwords arrive on standard input, one per line, never on the command line:
+#   luks-add-recovery     stdin: current password.  Adds a new 48-digit recovery key and
+#                         prints it on a line starting with "RECOVERY-KEY:".
+#   luks-change-password  stdin: current password, then the new one (8+ characters).
+#   luks-header-backup    Saves a header backup and prints "HEADER-FILE: <path>".
+luks-add-recovery|luks-change-password|luks-header-backup)
+    command -v cryptsetup >/dev/null || { echo "cryptsetup is not installed." >&2; exit 1; }
+    if ! [[ "$arg" =~ ^/dev/[A-Za-z0-9/_.-]+$ ]] || [ ! -b "$arg" ] || ! cryptsetup isLuks "$arg"; then
+        echo "$arg is not an encrypted drive." >&2
+        exit 2
+    fi
+    # Secrets go through a private folder in RAM and are wiped afterwards.
+    T=$(mktemp -d /run/proton-security-XXXXXX)
+    chmod 700 "$T"
+    trap 'set +e; shred -u "$T"/* 2>/dev/null; rm -rf "$T"' EXIT
+    case "$cmd" in
+    luks-add-recovery)
+        IFS= read -r current || true
+        printf '%s' "$current" > "$T/cur"
+        # 8 groups of 6 random digits, like a BitLocker recovery key.
+        key=""
+        for _ in 1 2 3 4 5 6 7 8; do key="$key$(printf '%06d' $((SRANDOM % 1000000)))-"; done
+        key=${key%-}
+        printf '%s' "$key" > "$T/new"
+        say "Adding a recovery key to $arg"
+        if ! cryptsetup luksAddKey --key-file "$T/cur" "$arg" "$T/new"; then
+            echo "The disk password is not correct, or there is no free key slot." >&2
+            exit 1
+        fi
+        say "Recovery key added. You can type it instead of your disk password when the computer starts."
+        echo "RECOVERY-KEY: $key"
+        ;;
+    luks-change-password)
+        IFS= read -r old || true
+        IFS= read -r new || true
+        if [ "${#new}" -lt 8 ]; then
+            echo "The new password must have at least 8 characters." >&2
+            exit 2
+        fi
+        printf '%s' "$old" > "$T/old"
+        printf '%s' "$new" > "$T/new"
+        say "Changing the disk password of $arg"
+        if ! cryptsetup luksChangeKey --key-file "$T/old" "$arg" "$T/new"; then
+            echo "The current disk password is not correct." >&2
+            exit 1
+        fi
+        say "Disk password changed. Use the new password the next time the computer starts."
+        ;;
+    luks-header-backup)
+        # The backup is made in our private folder, then copied into the
+        # user's own runtime folder *as the user* (setpriv), so the app can
+        # move it where the user chooses. Root never writes, chmods or chowns
+        # anything in a folder the user controls: that would let the user
+        # swap the file for a link to a system file in between.
+        uid="${PKEXEC_UID:-}"
+        [[ "$uid" =~ ^[0-9]+$ ]] || { echo "Run this through Proton Security (pkexec)." >&2; exit 2; }
+        gid=$(id -g "$uid")
+        dir="/run/user/$uid"
+        [ -d "$dir" ] || { echo "Your session folder $dir was not found." >&2; exit 1; }
+        out="$dir/proton-security-header-$(basename "$arg")-$(date +%F).img"
+        say "Saving the encryption header of $arg"
+        cryptsetup luksHeaderBackup "$arg" --header-backup-file "$T/header.img"
+        setpriv --reuid="$uid" --regid="$gid" --clear-groups -- \
+            sh -c 'umask 077; rm -f -- "$1"; cat > "$1"' sh "$out" < "$T/header.img"
+        say "Header saved. Keep it on a USB drive: it can repair the drive if the header is damaged."
+        echo "HEADER-FILE: $out"
+        ;;
+    esac
+    ;;
+
+# ---------------------------------------------------------------- backup
+# Install Kup, KDE's backup tool.
+install-kup)
+    apt_install kup-backup
+    say "Kup is installed. Open its settings to choose what to back up and where."
+    ;;
+
+# ---------------------------------------------------------------- disk space
+# Free disk space: apt cache, unneeded packages, old logs, unused Flatpak runtimes.
+cleanup)
+    before=$(df -P -B1 / | awk 'NR==2{print $4}')
+    say "Removing downloaded package files"
+    apt-get clean
+    say "Removing packages that are no longer needed"
+    apt-get -y -q autoremove --purge || true
+    if command -v journalctl >/dev/null; then
+        say "Shrinking old system logs"
+        journalctl --vacuum-size=200M >/dev/null 2>&1 || true
+    fi
+    if command -v flatpak >/dev/null; then
+        say "Removing unused Flatpak runtimes"
+        flatpak uninstall --system --unused -y --noninteractive >/dev/null 2>&1 || true
+    fi
+    after=$(df -P -B1 / | awk 'NR==2{print $4}')
+    freed=$(( (after - before) / 1000000 ))
+    [ "$freed" -lt 0 ] && freed=0
+    say "Done. Freed about ${freed} MB on the system drive."
+    ;;
+
+# ---------------------------------------------------------------- firewall rules
+# Allow incoming connections to a port. <arg> = port, $3 = tcp | udp.
+fw-allow-port)
+    need_ufw; valid_port "$arg"; proto="${3:-}"; valid_proto "$proto"
+    ufw --force delete deny "$arg/$proto" >/dev/null 2>&1 || true
+    say "Allowing incoming $proto connections to port $arg"
+    ufw allow "$arg/$proto" comment 'Proton Security'
+    ;;
+
+# Block incoming connections to a port. <arg> = port, $3 = tcp | udp.
+fw-block-port)
+    need_ufw; valid_port "$arg"; proto="${3:-}"; valid_proto "$proto"
+    ufw --force delete allow "$arg/$proto" >/dev/null 2>&1 || true
+    say "Blocking incoming $proto connections to port $arg"
+    ufw deny "$arg/$proto" comment 'Proton Security'
+    ;;
+
+# Remove the allow / block rule of a port. <arg> = port, $3 = tcp | udp.
+fw-remove-port)
+    need_ufw; valid_port "$arg"; proto="${3:-}"; valid_proto "$proto"
+    say "Removing the rule for port $arg/$proto"
+    ufw --force delete allow "$arg/$proto" 2>/dev/null || true
+    ufw --force delete deny "$arg/$proto" 2>/dev/null || true
+    say "Done. The firewall's default setting applies to this port again."
+    ;;
+
+# Block all traffic with one IP address (both directions) and end its open connections.
+fw-block-ip)
+    need_ufw; valid_ip "$arg"
+    say "Blocking all traffic with $arg"
+    ufw_add_top deny out to "$arg" comment 'Proton Security'
+    ufw_add_top deny in from "$arg" comment 'Proton Security'
+    # End connections that are already open.
+    if command -v ss >/dev/null; then ss -K dst "$arg" >/dev/null 2>&1 || true; fi
+    say "$arg is blocked."
+    ;;
+
+# Undo fw-block-ip.
+fw-unblock-ip)
+    need_ufw; valid_ip "$arg"
+    say "Unblocking $arg"
+    ufw --force delete deny out to "$arg" 2>/dev/null || true
+    ufw --force delete deny in from "$arg" 2>/dev/null || true
+    say "$arg is no longer blocked."
+    ;;
+
+# Print UFW's rules (its rule files are only readable by root).
+fw-rules)
+    need_ufw
+    ufw status verbose
+    ;;
+
+fw-log)
+    # Recent firewall log lines, for accounts that can't read the system log.
+    journalctl -q --no-pager -o short-iso _TRANSPORT=kernel -g '\[UFW ' -n 300 2>/dev/null \
+        || tail -n 300 /var/log/ufw.log 2>/dev/null || true
+    ;;
+
+# Update a driver: upgrade the package that ships it (the kernel, for built-in drivers)
+# and every installed firmware package. <arg> = module name.
+driver-update)
+    valid_module "$arg"
+    file=$(module_file "$arg")
+    pkg=$(module_package "$arg")
+    fwpkgs=$(module_firmware_packages "$arg")
+    say "Driver: $arg"
+    say "Driver file: ${file:-built into the kernel}"
+    say "Provided by package: ${pkg:-(not found)}"
+    say "Refreshing package lists"
+    apt-get update -q || say "Some package sources could not be refreshed; continuing with the cached lists."
+    targets=""
+    case "$pkg" in
+        linux-image-*|"")
+            # Drivers that come with the kernel are updated by installing the newest kernel.
+            for meta in linux-image-amd64 linux-image-arm64 linux-image-686-pae linux-image-rt-amd64 linux-image-cloud-amd64; do
+                if dpkg -s "$meta" >/dev/null 2>&1; then targets="$targets $meta"; fi
+            done
+            say "This driver is part of the Linux kernel, so it is updated with the kernel." ;;
+        *) targets="$targets $pkg" ;;
+    esac
+    targets="$targets $fwpkgs"
+    # Every installed firmware package (firmware for this hardware may live in any of them).
+    targets="$targets $(dpkg-query -W -f='${db:Status-Status} ${binary:Package}\n' 'firmware-*' 2>/dev/null | awk '$1=="installed"{print $2}' | tr '\n' ' ' || true)"
+    # $targets is a space-separated list of package names (all from dpkg/modinfo, never
+    # from the user): it is split into words on purpose below.
+    # shellcheck disable=SC2086
+    targets=$(echo $targets | tr ' ' '\n' | { grep -v '^$' || true; } | sort -u | tr '\n' ' ')
+    if [ -z "${targets// }" ]; then
+        say "Nothing to update for this driver."
+        exit 0
+    fi
+    say "Checking for newer versions of: $targets"
+    # shellcheck disable=SC2086
+    before=$(dpkg-query -W -f='${binary:Package}=${Version}\n' $targets 2>/dev/null | sort || true)
+    # shellcheck disable=SC2086
+    apt-get install -y -q --only-upgrade -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold $targets
+    # shellcheck disable=SC2086
+    after=$(dpkg-query -W -f='${binary:Package}=${Version}\n' $targets 2>/dev/null | sort || true)
+    if [ "$before" = "$after" ]; then
+        say "The driver is already up to date."
+    else
+        say "Updated:"
+        diff <(echo "$before") <(echo "$after") | sed -n 's/^> /    /p' || true
+        if [ -f /var/run/reboot-required ]; then
+            say "Restart the computer to start using the new driver."
+        else
+            say "Use Reinstall driver (or restart) to start using the new driver."
+        fi
+    fi
+    ;;
+
+driver-reinstall)
+    # "Reinstall" = unload the driver and load it again (resets the device).
+    valid_module "$arg"
+    if [[ "$arg" =~ $CRITICAL_RE ]]; then
+        echo "$arg is needed by the system (disks, USB or input) and cannot be reloaded while the computer is running." >&2
+        exit 1
+    fi
+    say "Reinstalling driver $arg"
+    unload_module "$arg" || exit 1
+    say "Loading driver $arg"
+    modprobe -- "$arg"
+    say "Driver $arg was reinstalled and is running again."
+    ;;
+
+driver-purge)
+    # "Uninstall" = remove the driver from the system.
+    #  - Driver in its own package (DKMS, vendor driver): purge that package.
+    #  - Driver inside the kernel package: can't delete without removing the
+    #    kernel, so block it permanently (undo with driver-enable).
+    valid_module "$arg"
+    if [[ "$arg" =~ $CRITICAL_RE ]]; then
+        echo "$arg is needed by the system (disks, USB or input) and cannot be uninstalled." >&2
+        exit 1
+    fi
+    pkg=$(module_package "$arg")
+    case "$pkg" in
+        ""|linux-image-*|linux-modules-*|linux-signed-*)
+            say "$arg is part of the Linux kernel${pkg:+ ($pkg)}; blocking it permanently"
+            unload_module "$arg" || say "It stays loaded until you restart the computer."
+            touch "$DISABLED"
+            grep -qx "blacklist $arg" "$DISABLED" || echo "blacklist $arg" >> "$DISABLED"
+            grep -qx "install $arg /bin/false" "$DISABLED" || echo "install $arg /bin/false" >> "$DISABLED"
+            if [ -f /etc/modules-load.d/proton-security.conf ]; then
+                sed -i "/^$arg\$/d" /etc/modules-load.d/proton-security.conf
+            fi
+            if command -v update-initramfs >/dev/null; then
+                say "Updating the startup image so the driver is not loaded at boot"
+                update-initramfs -u >/dev/null 2>&1 || true
+            fi
+            say "Driver $arg uninstalled. Use Enable driver to undo. Restart the computer to finish."
+            ;;
+        *)
+            # Never remove essential / required packages or a kernel along with it.
+            plan=$(apt-get -s -q purge "$pkg" 2>/dev/null | awk '/^(Purg|Remv) /{print $2}' || true)
+            for p in $plan; do
+                info=$(dpkg-query -W -f='${Essential} ${Priority}' "$p" 2>/dev/null || true)
+                case "$p" in linux-image-*|linux-modules-*|linux-signed-*)
+                    echo "Removing $pkg would also remove the kernel package $p. Nothing was changed." >&2; exit 1 ;;
+                esac
+                case "$info" in yes*|*required*|*important*)
+                    echo "Removing $pkg would also remove $p, which the system needs. Nothing was changed." >&2; exit 1 ;;
+                esac
+            done
+            say "Driver $arg is provided by package $pkg"
+            say "Packages to remove: ${plan:-$pkg}"
+            unload_module "$arg" || say "The driver stays loaded until you restart the computer."
+            # shellcheck disable=SC2086
+            apt-get purge -y -q -o Dpkg::Options::=--force-confdef $pkg
+            if command -v update-initramfs >/dev/null; then
+                update-initramfs -u >/dev/null 2>&1 || true
+            fi
+            if [ -n "$(module_file "$arg")" ]; then
+                say "Note: the kernel also includes a driver named $arg, which will be used instead after a restart."
+            fi
+            say "Driver $arg removed. Restart the computer to finish. To get it back, install $pkg again."
+            ;;
+    esac
+    ;;
+
+# Undo driver-purge's block: remove it from the blocklist and load the driver again.
+driver-enable)
+    valid_module "$arg"
+    # Only a driver we disabled, or one for hardware that is present.
+    if ! module_disabled_by_us "$arg" && ! module_matches_hardware "$arg"; then
+        echo "$arg was not disabled by Proton Security and matches no device in this computer." >&2
+        exit 1
+    fi
+    if [ -f "$DISABLED" ]; then
+        sed -i -e "/^blacklist $arg\$/d" -e "/^install $arg \/bin\/false\$/d" "$DISABLED"
+        [ -s "$DISABLED" ] || rm -f "$DISABLED"
+    fi
+    say "Loading driver $arg"
+    modprobe -- "$arg"
+    say "Driver $arg is enabled."
+    ;;
+
+*)
+    echo "Unknown command: $cmd" >&2
+    exit 2
+    ;;
+esac

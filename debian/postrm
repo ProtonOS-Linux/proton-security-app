@@ -1,0 +1,14 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Runs after the package is removed: refreshes the software center cache;
+# "purge" also deletes leftovers of old versions.
+set -e
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    if command -v appstreamcli >/dev/null 2>&1; then
+        appstreamcli refresh-cache --force >/dev/null 2>&1 || true
+    fi
+fi
+if [ "$1" = purge ]; then
+    rm -rf /var/lib/proton-security
+fi
+exit 0

@@ -1,0 +1,88 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Proton Security post-installation:
+#  - remove the 0.2.0 background service (nothing runs as root anymore)
+#  - refresh the AppStream cache so Discover lists the app
+#  - start the tray icon (and, on a fresh install, open the app) in every
+#    active graphical session, so the user sees it right after installing.
+set -e
+# Set PROTON_SECURITY_DEBUG=1 when installing to trace this script on the terminal.
+[ -n "${PROTON_SECURITY_DEBUG:-}" ] && set -x
+
+# Environment variables a desktop app needs, copied from the user's session.
+ENV_RE='^(DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|DBUS_SESSION_BUS_ADDRESS|XDG_RUNTIME_DIR|XDG_SESSION_TYPE|XDG_SESSION_DESKTOP|XDG_CURRENT_DESKTOP|XDG_DATA_DIRS|XDG_CONFIG_DIRS|DESKTOP_SESSION|KDE_FULL_SESSION|KDE_SESSION_VERSION|LANG|LANGUAGE|LC_[A-Z]+|QT_[A-Z_]+)='
+
+session_pid() {
+    # A process that runs inside the user's desktop session.
+    for p in plasmashell kwin_wayland kwin_x11 ksmserver gnome-shell xfce4-session; do
+        pid=$(pgrep -u "$1" -x "$p" 2>/dev/null | head -n1) || true
+        [ -n "$pid" ] && { echo "$pid"; return 0; }
+    done
+    return 1
+}
+
+run_in_session() {
+    # $1=user $2=uid, rest = command
+    user=$1; uid=$2; shift 2
+    home=$(getent passwd "$user" | cut -d: -f6)
+    if pid=$(session_pid "$uid"); then
+        grep -zE "$ENV_RE" "/proc/$pid/environ" 2>/dev/null \
+          | xargs -0 -r sh -c 'u=$1; h=$2; shift 2
+                exec runuser -u "$u" -- env -i HOME="$h" USER="$u" LOGNAME="$u" \
+                    PATH=/usr/local/bin:/usr/bin:/bin "$@" setsid -f '"$*"' \
+                    </dev/null >/dev/null 2>&1' sh "$user" "$home" || true
+    elif command -v systemd-run >/dev/null 2>&1; then
+        # Fall back to the user's systemd manager (it has the session environment on Plasma 6).
+        systemd-run --quiet --collect --user --machine="$user@" -- "$@" >/dev/null 2>&1 || true
+    fi
+}
+
+launch_for_desktop_users() {
+    open_window=$1
+    command -v loginctl >/dev/null 2>&1 || return 0
+    seen=""
+    loginctl list-sessions --no-legend 2>/dev/null | while read -r sid uid user _rest; do
+        [ -n "$sid" ] || continue
+        case "$uid" in ''|*[!0-9]*) continue ;; esac
+        [ "$uid" -ge 1000 ] || continue
+        type=$(loginctl show-session "$sid" -p Type --value 2>/dev/null || true)
+        state=$(loginctl show-session "$sid" -p State --value 2>/dev/null || true)
+        case "$type" in x11|wayland) ;; *) continue ;; esac
+        case "$state" in active|online) ;; *) continue ;; esac
+        case " $seen " in *" $user "*) continue ;; esac
+        seen="$seen $user"
+        run_in_session "$user" "$uid" /usr/bin/proton-security --tray
+        if [ "$open_window" = yes ]; then
+            run_in_session "$user" "$uid" /usr/bin/proton-security
+        fi
+    done
+}
+
+case "$1" in
+configure)
+    # 0.2.0 shipped a root service for the restore point list; it is gone.
+    rm -f /etc/systemd/system/paths.target.wants/proton-security-snapshots.path \
+          /etc/systemd/system/timers.target.wants/proton-security-snapshots.timer
+    rm -rf /var/lib/proton-security
+    [ -d /run/systemd/system ] && systemctl daemon-reload >/dev/null 2>&1 || true
+
+    # Let KDE Discover / GNOME Software see the app as installed.
+    if command -v appstreamcli >/dev/null 2>&1; then
+        appstreamcli refresh-cache --force >/dev/null 2>&1 || true
+    fi
+
+    if [ -z "$2" ]; then
+        fresh=yes      # first installation: also open the main window
+    else
+        fresh=no       # upgrade: restart the tray so it runs the new version
+        pkill -f '^(/usr/bin/)?proton-security --tray' >/dev/null 2>&1 || true
+        sleep 1
+    fi
+    # Not in a chroot / ISO build (no desktop sessions there).
+    if [ "${PROTON_SECURITY_NO_LAUNCH:-}" != 1 ]; then
+        launch_for_desktop_users "$fresh" || true
+    fi
+    ;;
+esac
+
+exit 0

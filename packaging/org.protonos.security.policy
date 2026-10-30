@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  polkit actions for Proton Security's privileged helper. See docs/SECURITY-MODEL.md.
+
+  The helper is installed under two names, each with its own action (pkexec chooses the action
+  by the program's exact path):
+
+  - proton-security-helper: everyday fixes (turn on updates, the firewall, restore points;
+    install tools). The administrator password is remembered for a few minutes
+    (auth_admin_keep), so several fixes in a row ask once.
+
+  - proton-security-helper-protected: commands that LOWER protection or touch disk-encryption
+    secrets (open a firewall port, stop definition updates, uninstall or load drivers, disk
+    recovery keys and passwords). The password is asked EVERY time (auth_admin). The script
+    refuses these commands under its everyday name, so a remembered password can never be
+    reused for them.
+-->
+<policyconfig>
+  <vendor>Proton OS</vendor>
+  <vendor_url>https://www.protonos.org</vendor_url>
+  <icon_name>proton-security</icon_name>
+
+  <action id="org.protonos.security.helper">
+    <description>Change security settings</description>
+    <message>Proton Security needs your permission to change system security settings.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <!-- Remember the password for a few minutes so several fixes in a row only ask once. -->
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/proton-security/proton-security-helper</annotate>
+  </action>
+
+  <action id="org.protonos.security.helper.protected">
+    <description>Change protection or disk encryption settings</description>
+    <message>Proton Security needs your permission for a change that affects your computer's protection or disk encryption.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <!-- Ask every time: never reuse a remembered password for these. -->
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/proton-security/proton-security-helper-protected</annotate>
+  </action>
+</policyconfig>

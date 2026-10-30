@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Proton Security tray icon
+Comment=Shows your security status in the system tray and runs the daily quick scan
+Exec=proton-security --tray
+Icon=proton-security
+Terminal=false
+NoDisplay=true
+X-KDE-autostart-phase=2
+X-GNOME-Autostart-enabled=true

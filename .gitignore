@@ -1,0 +1,9 @@
+# Build output (cargo build, cargo deb)
+/target
+
+# Editors and system files
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
