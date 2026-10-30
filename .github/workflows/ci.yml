@@ -25,7 +25,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates git shellcheck
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Lints use a fixed Rust version, so a new Rust release (with new lints) never breaks CI
       # by surprise. Update it on purpose, fixing any new warnings in the same change.
       - uses: dtolnay/rust-toolchain@1.97
@@ -56,7 +56,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.95
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets
@@ -71,7 +71,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates git appstream desktop-file-utils
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Validate metadata
