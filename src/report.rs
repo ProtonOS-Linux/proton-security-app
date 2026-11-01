@@ -276,8 +276,17 @@ ul{{margin:4px 0;padding-left:20px}} footer{{margin-top:32px;font-size:13px}}
     );
     row(
         &mut o,
-        "Scan new downloads",
+        "Scan new files and downloads",
         if crate::policy::effective(st.scan_downloads, pol.scan_downloads) {
+            "On"
+        } else {
+            "Off"
+        },
+    );
+    row(
+        &mut o,
+        "Watch startup programs",
+        if crate::policy::effective(st.watch_startup, pol.watch_startup) {
             "On"
         } else {
             "Off"

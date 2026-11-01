@@ -37,7 +37,10 @@ src/
 │
 ├── checks.rs          The nine "Security at a glance" checks + fingerprint() change detection
 ├── antivirus.rs       ClamAV: version/definitions, scans (clamscan), history, quarantine
-├── watchers.rs        Background watchers used by the tray: Downloads, opened USB drives, new USB devices
+├── watchers.rs        Background watchers used by the tray: new files (Downloads, desktop, /tmp…), re-check
+│                      after definition updates, opened USB drives, new USB devices
+├── risk.rs            Which files are risky (name, content, executable bit); suspicious startup text
+├── startup.rs         Startup watch: sign-in programs, user services, KDE scripts, .bashrc, ~/.local/bin
 ├── firewall.rs        Firewall status, network connections (/proc/net), UFW log, rules added from the app
 ├── account.rs         Screen lock, automatic sign-in, password, administrators, PowerDevil inhibitions
 ├── devsec.rs          Secure Boot, TPM, disk encryption
@@ -119,10 +122,16 @@ the space available and chooses how many detail lines fit (`page_home::tile_styl
 
 1. **New USB devices**: compare `/sys/bus/usb/devices` with the last loop; notify about keyboards, network
    adapters and drives.
-2. **Downloads**: files in `~/Downloads` that are new and have stopped growing are scanned on a thread.
-3. **Opened USB drives**: new mount points under `/media` or `/run/media` are scanned on a thread.
-4. **Re-check** when something changed (see below), and update the icon, tooltip and menu.
-5. **Daily quick scan** when due (runs `proton-security --scheduled-scan` at idle priority).
+2. **New files**: new files that have stopped growing in Downloads, on the desktop, in apps' download folders,
+   Firefox's temporary folder and (risky own files only) `/tmp` and `/dev/shm` are scanned on a thread, risky
+   ones first. Files found while a scan runs wait in a queue.
+3. **Startup places** (every 30 seconds): new or changed sign-in programs, user services, KDE scripts, shell
+   startup files, personal programs and shortcuts are scanned and reported (see `startup.rs`).
+4. **New virus definitions** (looked at every 10 minutes): the last week's clean new files are scanned again at
+   idle priority, at most every 4 hours.
+5. **Opened USB drives**: new mount points under `/media` or `/run/media` are scanned on a thread.
+6. **Re-check** when something changed (see below), and update the icon, tooltip and menu.
+7. **Daily quick scan** when due (runs `proton-security --scheduled-scan` at idle priority).
 
 If Plasma's system tray isn't there yet (early at login), the loop still runs and the icon is registered as soon
 as possible, so protection never waits for the panel. A lock file (`proton-security-tray.lock`) makes sure only
@@ -148,8 +157,10 @@ Written by the app and the tray (as the user):
 
 | Path | What |
 |---|---|
-| `~/.config/proton-security/settings.json` | Settings: daily scan, download/USB scanning, USB alerts, firewall rules added, backup choice |
+| `~/.config/proton-security/settings.json` | Settings: daily scan, new file/startup/USB scanning, USB alerts, firewall rules added, backup choice |
 | `~/.local/share/proton-security/scan-history.json` | Protection history (30 days) |
+| `~/.local/share/proton-security/recent-arrivals.json` | Clean files from the last 7 days and the definitions date, for the re-check after updates (mode 600) |
+| `~/.local/share/proton-security/startup-baseline.json` | What the startup places looked like: sizes, dates, link targets and line hashes, no file contents (mode 600) |
 | `~/.local/share/proton-security/quarantine/` | Quarantined files (folder mode 700, files mode 000) and `index.json` |
 | `~/.cache/proton-security/scan-list-*.txt` | The list of files given to ClamAV during a scan (folder mode 700, file mode 600), deleted afterwards |
 | `~/Documents/Proton-Security-Report-*.html` | Exported reports (where you choose) |

@@ -174,6 +174,27 @@ names were split in two and never scanned by the background checks (finding 2). 
 
 `antivirus::safe_scan_tests` replays the original proof of concept against the real scan code and ClamAV.
 
+### Shared temporary folders
+
+`/tmp` and `/dev/shm` are shared by every account, so the new file check only looks at files directly in them
+that **this user owns** (checked with the file's owner, without following symbolic links). Another account can't
+make the tray scan, move or report its files, and can't rename yours there (the folders are "sticky"). Firefox's
+`/tmp/mozilla_<user>0` counts only when it is a real folder owned by the user, not a link.
+
+### Startup watch
+
+The startup watch reads at most the first 64 KB of a changed file, never runs anything, and treats the content
+as text only. Names shown in notifications (an app shortcut's `Name=`) are shortened and, like every notification
+text, escaped. It is an **early warning** for common malware that adds itself to sign-in programs or `.bashrc`;
+a program already running as the user could also change the saved baseline or stop the tray. Malware with
+administrator rights is out of its reach (system-wide startup places are not watched without root).
+
+### Notifications
+
+Plasma shows notification text as simple HTML. File names, drive labels, USB device names and shortcut names come
+from outside, so `&`, `<` and `>` are escaped, control characters replaced and the text limited to 400
+characters before every notification (audit finding 5).
+
 ## Secrets
 
 - **Disk passwords** are typed in the window, sent to the helper on standard input, written to files only inside
@@ -187,7 +208,9 @@ names were split in two and never scanned by the background checks (finding 2). 
 ## Data the app keeps
 
 All user data stays on the computer, in the user's home folder (see
-[ARCHITECTURE.md](ARCHITECTURE.md#files-on-disk)). Proton Security sends nothing over the network itself; network
+[ARCHITECTURE.md](ARCHITECTURE.md#files-on-disk)). The recent-files list for re-checks
+(`recent-arrivals.json`, mode 600) holds names of files that arrived in the last 7 days. Proton Security sends
+nothing over the network itself; network
 access only happens through the system tools it starts on request (apt, freshclam, flatpak). The device manager's
 "search online" opens a hardware database page in the browser only when clicked.
 
@@ -200,6 +223,9 @@ not present in release builds; you can check with
 
 ## Limits
 
-- ClamAV scans on demand (daily, downloads, USB drives, manual). It is not real-time (on-access) protection.
+- ClamAV scans on demand (daily, new files, startup items, USB drives, manual). It is not real-time (on-access)
+  protection: the tray notices new files within about 10 seconds, so a file opened instantly can run before it
+  is checked. Folders other than those listed in [CHECKS.md](CHECKS.md) (for example Documents) are covered by
+  the daily and manual scans only.
 - The company policy file is trusted: whoever can write `/etc/proton-security/policy.conf` is already root.
 - An administrator who authenticates can run any helper command, which is no more than `sudo` already allows.

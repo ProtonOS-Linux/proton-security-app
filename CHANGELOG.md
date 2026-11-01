@@ -4,6 +4,37 @@ All notable changes to Proton Security are listed here, newest first.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.9] - 2026-11-01
+
+### Added
+- **More places are checked for new files.** Besides Downloads, the tray now checks new files on the desktop, in
+  Flatpak apps' own Downloads folders, files opened straight from Firefox or Thunderbird (`/tmp/mozilla_*`), and
+  your own programs and scripts saved in `/tmp` and `/dev/shm`. Downloads still tell you "… is safe"; the other
+  places are checked quietly and only threats are reported.
+- **Risky files first.** Programs, scripts, installers, macro documents and archives are recognized by name, by
+  content (a program renamed `photo.jpg` is still caught) and by the executable bit. They are checked first and
+  even when they are big or hidden; on USB drives they are never skipped as "photos" or "too big".
+- **Startup watch.** New setting *Tell me when a program is set to start automatically* (on by default, policy
+  key `watch_startup`, also in the tray menu). The tray watches sign-in programs, background tasks for your
+  account, KDE sign-in scripts, `.bashrc`/`.profile`, `~/.local/bin` and app shortcuts, scans every new or changed
+  item, and tells you about new sign-in programs and anything suspicious, for example a `.bashrc` line that
+  downloads and runs a script. Changes made while the tray wasn't running are noticed at the next login.
+- **Re-check after definition updates.** The last week's new files are scanned again, at idle priority and at
+  most every 4 hours, when ClamAV's virus definitions change, because new threats are often recognized only a day
+  or two later. You hear about it only if something is found.
+
+### Changed
+- Background scans with `clamscan` now check files up to 2 GB (reading at most 512 MB of each) instead of
+  silently skipping files over 100 MB, and run at the lowest normal disk priority.
+
+### Fixed
+- New downloads that finished while another download was being checked were never checked. They now wait in a
+  queue.
+
+### Security
+- Notification text is escaped, so a file name, drive label or USB device name can no longer add links or
+  formatting to a Proton Security notification (audit finding 5).
+
 ## [0.4.8] - 2026-10-30
 
 ### Added
@@ -223,6 +254,7 @@ First version: Security at a glance with five checks (antivirus, security update
 system restore), a ClamAV front end with quick / full / custom scans, a Snapper restore point list and a device
 manager.
 
+[0.4.9]: https://github.com/ProtonOS-Linux/proton-security-app/releases/tag/v0.4.9
 [0.4.8]: https://github.com/ProtonOS-Linux/proton-security-app/releases/tag/v0.4.8
 [0.4.7]: https://github.com/ProtonOS-Linux/proton-security-app/releases/tag/v0.4.7
 [0.4.6]: https://github.com/ProtonOS-Linux/proton-security-app/releases/tag/v0.4.6

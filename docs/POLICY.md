@@ -40,7 +40,8 @@ out to let users choose.
 | Key | Controls | Users' default |
 |---|---|---|
 | `daily_scan` | Daily automatic quick scan | on |
-| `scan_downloads` | Checking new files in Downloads | on |
+| `scan_downloads` | Checking new files in Downloads and other places files arrive, and re-checking them after definition updates | on |
+| `watch_startup` | Watching the places programs use to start automatically | on |
 | `scan_usb` | Scanning USB drives when they are opened | on |
 | `usb_alerts` | Notifications for new USB keyboards, network adapters and drives | on |
 

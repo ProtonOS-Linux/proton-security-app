@@ -72,6 +72,11 @@
     <binary>proton-security</binary>
   </provides>
   <releases>
+    <release version="0.4.9" date="2026-11-01">
+      <description>
+        <p>New files on the desktop and in temporary folders are checked too (programs and scripts first), recent files are checked again after virus definition updates, and you are told when a program sets itself to start automatically.</p>
+      </description>
+    </release>
     <release version="0.4.8" date="2026-10-30">
       <description>
         <p>New "Add a rule" button on the Firewall page, and the Device manager no longer flickers.</p>

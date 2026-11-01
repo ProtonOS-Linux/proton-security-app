@@ -20,8 +20,12 @@ pub struct Settings {
     /// Firewall rules added from the Firewall page (ufw's own rule file is
     /// only readable by root, so the app remembers what it added).
     pub fw_rules: Vec<crate::firewall::Rule>,
-    /// Scan new files in Downloads (done by the tray).
+    /// Scan new files where files arrive: Downloads, the desktop, files opened from the
+    /// browser or email, own risky files in /tmp (done by the tray). Also re-checks the last
+    /// week's new files after a virus definition update.
     pub scan_downloads: bool,
+    /// Watch the places programs use to start automatically (see `startup.rs`).
+    pub watch_startup: bool,
     /// Notify when a new USB keyboard / network / storage device appears.
     pub usb_alerts: bool,
     /// Quick-scan USB drives and memory cards when they are opened (mounted).
@@ -37,6 +41,7 @@ impl Default for Settings {
             last_scheduled_scan: 0,
             fw_rules: vec![],
             scan_downloads: true,
+            watch_startup: true,
             usb_alerts: true,
             scan_usb: true,
             backup_other_way: false,

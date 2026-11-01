@@ -32,8 +32,10 @@ pub enum Forced {
 pub struct Policy {
     /// `daily_scan`: the daily automatic quick scan.
     pub daily_scan: Forced,
-    /// `scan_downloads`: checking new files in Downloads.
+    /// `scan_downloads`: checking new files in Downloads and other places files arrive.
     pub scan_downloads: Forced,
+    /// `watch_startup`: watching the places programs use to start automatically.
+    pub watch_startup: Forced,
     /// `usb_alerts`: notifications for new USB keyboards, network adapters and drives.
     pub usb_alerts: Forced,
     /// `scan_usb`: scanning USB drives when they are opened.
@@ -69,6 +71,7 @@ impl Default for Policy {
         Self {
             daily_scan: Forced::No,
             scan_downloads: Forced::No,
+            watch_startup: Forced::No,
             usb_alerts: Forced::No,
             scan_usb: Forced::No,
             allow_driver_changes: true,
@@ -126,6 +129,9 @@ pub fn parse(text: &str) -> Policy {
     }
     if let Some(v) = kv.get("scan_downloads") {
         p.scan_downloads = parse_forced(v);
+    }
+    if let Some(v) = kv.get("watch_startup") {
+        p.watch_startup = parse_forced(v);
     }
     if let Some(v) = kv.get("usb_alerts") {
         p.usb_alerts = parse_forced(v);

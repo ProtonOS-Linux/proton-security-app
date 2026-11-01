@@ -9,7 +9,7 @@
 
 use crate::checks::{self, Level};
 use crate::policy::{self, Forced};
-use crate::{antivirus, settings, sys, watchers};
+use crate::{antivirus, settings, startup, sys, watchers};
 use ksni::blocking::TrayMethods;
 use std::path::PathBuf;
 use std::process::Command;
@@ -21,6 +21,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const RECHECK_EVERY: Duration = Duration::from_secs(10 * 60);
 /// Don't start the daily scan right at login.
 const SCAN_DELAY_AFTER_LOGIN: Duration = Duration::from_secs(10 * 60);
+/// How often the startup places are looked at (by size and date only).
+const STARTUP_POLL_EVERY: Duration = Duration::from_secs(30);
+/// How often to look whether the virus definitions changed.
+const DEFS_CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
+/// Most new files waiting for a check (risky ones are kept first).
+const MAX_QUEUED: usize = 2000;
 /// The daily quick scan runs when the last scan is at least this old.
 const SCAN_INTERVAL_SECS: i64 = 24 * 3600;
 
@@ -196,10 +202,18 @@ impl ksni::Tray for Tray {
             }
             .into(),
             CheckmarkItem {
-                label: "Scan new downloads".into(),
+                label: "Scan new files and downloads".into(),
                 checked: policy::effective(st.scan_downloads, pol.scan_downloads),
                 enabled: pol.scan_downloads == Forced::No,
                 activate: Box::new(|_| settings::update(|s| s.scan_downloads = !s.scan_downloads)),
+                ..Default::default()
+            }
+            .into(),
+            CheckmarkItem {
+                label: "Watch startup programs".into(),
+                checked: policy::effective(st.watch_startup, pol.watch_startup),
+                enabled: pol.watch_startup == Forced::No,
+                activate: Box::new(|_| settings::update(|s| s.watch_startup = !s.watch_startup)),
                 ..Default::default()
             }
             .into(),
@@ -261,6 +275,10 @@ pub fn instance_lock(name: &str) -> Option<std::fs::File> {
 /// directly, then `kdialog`. Debug builds can write notifications to a file instead
 /// (`PROTON_SECURITY_NOTIFY_LOG`) for tests.
 pub fn notify(summary: &str, body: &str) {
+    // Plasma shows notification text as simple HTML. File names, drive labels, USB device
+    // names and app shortcut names come from outside, so they must not be able to add links
+    // or formatting.
+    let body = &notify_text(body);
     #[cfg(debug_assertions)]
     if let Ok(f) = std::env::var("PROTON_SECURITY_NOTIFY_LOG") {
         use std::io::Write;
@@ -319,6 +337,35 @@ pub fn notify(summary: &str, body: &str) {
             .args(["--title", summary, "--passivepopup", body, "15"])
             .spawn();
     }
+}
+
+/// A waiting time, shortened to a few seconds in debug builds when `PROTON_SECURITY_FAST=1`
+/// (to test the re-check after a definition update without waiting hours).
+fn fast_timer(d: Duration) -> Duration {
+    #[cfg(debug_assertions)]
+    if std::env::var("PROTON_SECURITY_FAST").as_deref() == Ok("1") {
+        return d.min(Duration::from_secs(10));
+    }
+    d
+}
+
+/// Make text safe for a notification body: `&`, `<` and `>` escaped, at most 400 characters.
+fn notify_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for (i, c) in s.chars().enumerate() {
+        if i >= 400 {
+            out.push('…');
+            break;
+        }
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c if c.is_control() && c != '\n' => out.push('?'),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Current Unix time in seconds.
@@ -434,10 +481,21 @@ pub fn run() -> i32 {
     let mut checked_fp = checks::fingerprint();
     let mut polled_fp = checked_fp.clone();
 
-    let mut downloads = watchers::DownloadWatcher::new();
+    let mut arrivals = watchers::ArrivalWatcher::new();
     let mut usb = watchers::UsbWatcher::new();
     let mut mounts = watchers::MountWatcher::new();
     let download_scan_busy = Arc::new(AtomicBool::new(false));
+    // New files found while a check was still running wait here (risky ones first).
+    let mut queued: Vec<watchers::Arrival> = vec![];
+
+    let mut startup_watch = startup::StartupWatcher::new();
+    let mut last_startup_poll = Instant::now() - STARTUP_POLL_EVERY;
+    let mut startup_queued: Vec<startup::Change> = vec![];
+    let startup_busy = Arc::new(AtomicBool::new(false));
+
+    // Re-check of the last week's new files after a virus definition update.
+    let mut last_defs_check = Instant::now();
+    let recheck_busy = Arc::new(AtomicBool::new(false));
 
     loop {
         handle.retry_register();
@@ -453,27 +511,83 @@ pub fn run() -> i32 {
             }
         }
 
-        // New files in Downloads.
-        let ready = downloads.poll();
-        if !ready.is_empty()
-            && policy::effective(st.scan_downloads, pol.scan_downloads)
-            && !download_scan_busy.swap(true, Ordering::SeqCst)
-        {
+        // New files in Downloads and the other places files arrive. The watcher always runs
+        // (so turning the option on doesn't flood the user with old files).
+        let ready = arrivals.poll();
+        let scan_new = policy::effective(st.scan_downloads, pol.scan_downloads);
+        if scan_new {
+            queued.extend(ready);
+            queued.sort_by_key(|a| !a.risky);
+            queued.truncate(MAX_QUEUED);
+        } else {
+            queued.clear();
+        }
+        if !queued.is_empty() && !download_scan_busy.swap(true, Ordering::SeqCst) {
+            let batch = std::mem::take(&mut queued);
             let (busy, h2) = (download_scan_busy.clone(), handle.clone());
-            let what = if ready.len() == 1 {
+            let what = if batch.len() == 1 {
                 format!(
                     "Checking {} for viruses…",
-                    watchers::file_name(&ready[0].to_string_lossy())
+                    watchers::file_name(&batch[0].path.to_string_lossy())
                 )
             } else {
-                format!("Checking {} downloads for viruses…", ready.len())
+                format!("Checking {} new files for viruses…", batch.len())
             };
             h2.update(|t: &mut Tray| t.activity = Some(what.clone()));
             std::thread::spawn(move || {
-                check_downloads(&ready);
+                check_arrivals(&batch);
                 h2.update(|t: &mut Tray| t.activity = None);
                 busy.store(false, Ordering::SeqCst);
             });
+        }
+
+        // Startup places (sign-in programs, background tasks, .bashrc…). Polled always, so the
+        // baseline stays current; changes are acted on only when the option is on.
+        if last_startup_poll.elapsed() >= STARTUP_POLL_EVERY {
+            last_startup_poll = Instant::now();
+            let changes = startup_watch.poll();
+            if policy::effective(st.watch_startup, pol.watch_startup) {
+                startup_queued.extend(changes);
+            } else {
+                startup_queued.clear();
+            }
+            if !startup_queued.is_empty() && !startup_busy.swap(true, Ordering::SeqCst) {
+                let batch = std::mem::take(&mut startup_queued);
+                let busy = startup_busy.clone();
+                std::thread::spawn(move || {
+                    check_startup(&batch);
+                    busy.store(false, Ordering::SeqCst);
+                });
+            }
+        }
+
+        // New virus definitions: check the last week's new files again, quietly, at idle
+        // priority (a new threat is often recognized only a day or two after it appears).
+        if scan_new
+            && last_defs_check.elapsed() > fast_timer(DEFS_CHECK_EVERY)
+            && started.elapsed() > fast_timer(SCAN_DELAY_AFTER_LOGIN)
+            && !recheck_busy.load(Ordering::SeqCst)
+            && !scanning.load(Ordering::SeqCst)
+        {
+            last_defs_check = Instant::now();
+            let stamp = watchers::defs_stamp();
+            let r = watchers::RecentArrivals::load();
+            if stamp > 0 && r.defs_stamp == 0 {
+                // First time: remember the current definitions.
+                watchers::update_recent(|r| r.defs_stamp = stamp);
+            } else if stamp > r.defs_stamp
+                && now() - r.last_recheck
+                    >= fast_timer(Duration::from_secs(watchers::RECHECK_MIN_SECS as u64)).as_secs()
+                        as i64
+                && !on_low_battery()
+            {
+                recheck_busy.store(true, Ordering::SeqCst);
+                let busy = recheck_busy.clone();
+                std::thread::spawn(move || {
+                    recheck_recent(stamp);
+                    busy.store(false, Ordering::SeqCst);
+                });
+            }
         }
 
         // USB drives and memory cards opened in the file manager.
@@ -605,43 +719,203 @@ impl TrayIcon {
     }
 }
 
-/// Scan finished downloads and tell the user the result.
-fn check_downloads(files: &[PathBuf]) {
-    let out = watchers::scan_files(files);
+/// Check new files and tell the user the result: always for downloads, only threats for the
+/// other places (see [`watchers::Place::tells_safe`]).
+fn check_arrivals(batch: &[watchers::Arrival]) {
+    let files: Vec<PathBuf> = batch.iter().map(|a| a.path.clone()).collect();
+    let loud: Vec<&watchers::Arrival> = batch.iter().filter(|a| a.place.tells_safe()).collect();
+    let out = watchers::scan_files(&files);
     if let Some(why) = &out.failed {
-        notify("Could not check your download", why);
+        if !loud.is_empty() {
+            notify("Could not check your download", why);
+        }
         return;
     }
-    let targets: Vec<String> = files
-        .iter()
-        .map(|f| f.to_string_lossy().into_owned())
-        .collect();
-    watchers::record_scan("Download check", targets, files.len() as u64, &out);
+    // Clean files are remembered for a re-check with newer definitions (threats are already in
+    // the history).
+    watchers::remember_arrivals(&clean_files(&files, &out), now());
+    // Quiet checks (temporary files, the desktop…) can be frequent; they go into the history
+    // only when something was found.
+    if !loud.is_empty() || !out.threats.is_empty() {
+        let targets: Vec<String> = files
+            .iter()
+            .map(|f| f.to_string_lossy().into_owned())
+            .collect();
+        let kind = if loud.is_empty() {
+            "New file check"
+        } else {
+            "Download check"
+        };
+        watchers::record_scan(kind, targets, files.len() as u64, &out);
+    }
     if out.threats.is_empty() {
-        let body = if files.len() == 1 {
+        if loud.is_empty() {
+            return;
+        }
+        let body = if loud.len() == 1 {
             format!(
                 "{} is safe. No threats found.",
-                watchers::file_name(&files[0].to_string_lossy())
+                watchers::file_name(&loud[0].path.to_string_lossy())
             )
         } else {
-            format!("{} new files are safe. No threats found.", files.len())
+            format!("{} new files are safe. No threats found.", loud.len())
         };
         notify("Download checked", &body);
     } else {
+        // Where each dangerous file was found.
+        let place_of = |t: &antivirus::Threat| {
+            let p = t.fs_path();
+            batch
+                .iter()
+                .find(|a| a.path == p)
+                .map(|a| a.place)
+                .unwrap_or(watchers::Place::Downloads)
+        };
+        let all_downloads = out.threats.iter().all(|t| place_of(t).tells_safe());
         let names: Vec<String> = out
             .threats
             .iter()
-            .map(|t| watchers::file_name(&t.path))
+            .map(|t| format!("{} ({})", watchers::file_name(&t.path), place_of(t).label()))
             .collect();
         notify(
-            "Threat found in a download",
-            &format!(
-                "{} is dangerous. Open Proton Security to quarantine or delete it.",
-                names.join(", ")
-            ),
+            if all_downloads {
+                "Threat found in a download"
+            } else {
+                "Threat found in a new file"
+            },
+            &threat_text(&names),
         );
     }
     poke_tray();
+}
+
+/// Scan new or changed startup items and tell the user about threats, new sign-in programs and
+/// suspicious changes (see [`startup::Change::message`]).
+fn check_startup(changes: &[startup::Change]) {
+    let files: Vec<PathBuf> = changes
+        .iter()
+        .filter(|c| c.scannable())
+        .map(|c| c.path.clone())
+        .collect();
+    let out = watchers::scan_files(&files);
+    if out.failed.is_none() && !files.is_empty() {
+        let targets = files
+            .iter()
+            .map(|f| f.to_string_lossy().into_owned())
+            .collect();
+        watchers::record_scan("Startup check", targets, files.len() as u64, &out);
+        watchers::remember_arrivals(&clean_files(&files, &out), now());
+    }
+    // At most three notifications at once; the rest are summed up.
+    let mut shown = 0;
+    let mut more = 0;
+    for c in changes {
+        let threat = out
+            .threats
+            .iter()
+            .find(|t| t.fs_path() == c.path)
+            .map(|t| t.signature.as_str());
+        if let Some((title, body)) = c.message(threat) {
+            if shown < 3 {
+                notify(&title, &body);
+                shown += 1;
+            } else {
+                more += 1;
+            }
+        }
+    }
+    if more > 0 {
+        notify(
+            "More startup changes",
+            &format!(
+                "{more} more programs were set to start automatically. If you didn't do this, run a full scan in Proton Security."
+            ),
+        );
+    }
+    if !out.threats.is_empty() {
+        poke_tray();
+    }
+}
+
+/// Check the last week's new files again with updated virus definitions (`stamp`, see
+/// [`watchers::defs_stamp`]). Runs at idle priority; the user hears about it only if a threat
+/// is found.
+fn recheck_recent(stamp: i64) {
+    let mut files = vec![];
+    watchers::update_recent(|r| {
+        r.prune(now());
+        files = r.existing();
+    });
+    let out = if files.is_empty() {
+        watchers::ScanOutcome::default()
+    } else {
+        watchers::scan_files_with(&files, watchers::Priority::Idle)
+    };
+    watchers::update_recent(|r| {
+        r.last_recheck = now();
+        // If the scan couldn't run, try again at the next update.
+        if out.failed.is_none() {
+            r.defs_stamp = stamp;
+        }
+    });
+    if out.failed.is_some() || out.threats.is_empty() {
+        return;
+    }
+    let targets = vec!["Files from the last 7 days".to_string()];
+    watchers::record_scan(
+        "Recheck with new definitions",
+        targets,
+        files.len() as u64,
+        &out,
+    );
+    let names: Vec<String> = out
+        .threats
+        .iter()
+        .map(|t| watchers::file_name(&t.path))
+        .collect();
+    notify(
+        "Threat found in a recent file",
+        &format!(
+            "The updated virus definitions recognize a file from the last week. {}",
+            threat_text(&names)
+        ),
+    );
+    // Found files are in the history now; don't report them again at the next update.
+    let found: Vec<PathBuf> = out.threats.iter().map(|t| t.fs_path()).collect();
+    watchers::update_recent(|r| r.forget(&found));
+    poke_tray();
+}
+
+/// The files of a scan that had no threat.
+fn clean_files(files: &[PathBuf], out: &watchers::ScanOutcome) -> Vec<PathBuf> {
+    let bad: std::collections::HashSet<PathBuf> = out.threats.iter().map(|t| t.fs_path()).collect();
+    files
+        .iter()
+        .filter(|f| !bad.contains(*f))
+        .cloned()
+        .collect()
+}
+
+/// "x.pdf is dangerous. Don't open it. …", or for several files "3 dangerous files: a, b and
+/// c. Don't open them. …" (at most three names).
+fn threat_text(names: &[String]) -> String {
+    let action = "Open Proton Security to quarantine or delete";
+    match names {
+        [] => String::new(),
+        [one] => format!("{one} is dangerous. Don't open it. {action} it."),
+        _ => {
+            let shown = names.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+            let more = if names.len() > 3 {
+                format!(" and {} more", names.len() - 3)
+            } else {
+                String::new()
+            };
+            format!(
+                "{} dangerous files: {shown}{more}. Don't open them. {action} them.",
+                names.len()
+            )
+        }
+    }
 }
 
 /// Quick-scan a USB drive that was just opened.
@@ -766,6 +1040,16 @@ pub fn scheduled_scan_main() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_text_is_escaped() {
+        assert_eq!(
+            notify_text("<a href=\"http://x\">Click</a> & go"),
+            "&lt;a href=\"http://x\"&gt;Click&lt;/a&gt; &amp; go"
+        );
+        assert_eq!(notify_text("a\u{1b}b"), "a?b");
+        assert_eq!(notify_text(&"x".repeat(500)).chars().count(), 401);
+    }
 
     /// Writes the tray icons as PNG when PROTON_ICON_OUT is set (for review).
     #[test]

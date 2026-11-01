@@ -40,7 +40,7 @@ A shield icon in the system tray shows the same status at all times.
 
 | Area | What it checks | What it can do |
 |---|---|---|
-| **Virus & threat protection** | ClamAV installed, virus definitions up to date, a recent scan, no open threats | Quick / full / custom scans, quarantine, daily automatic scan, checks every new download and every USB drive you open |
+| **Virus & threat protection** | ClamAV installed, virus definitions up to date, a recent scan, no open threats | Quick / full / custom scans, quarantine, daily automatic scan, checks every new download and new files on the desktop and in temporary folders (programs and scripts first), re-checks the last week's files after definition updates, warns when a program sets itself to start automatically, checks every USB drive you open |
 | **Automatic security updates** | `unattended-upgrades` installed and running | Turn it on |
 | **Package & Flatpak updates** | Packages and Flatpak apps updated in the last 30 days, automatic updates on | Update now, turn on automatic updates |
 | **Firewall & network** | UFW or firewalld on | Turn it on; see which programs use the network; allow or block ports and addresses; firewall log |
@@ -140,7 +140,7 @@ proton-security --version           print the version
  │  proton-security            proton-security --tray                 │
  │  the window                 tray icon + background protection      │
  │   • runs the checks          • status icon, re-checks on changes   │
- │   • shows the pages          • scans downloads and USB drives      │
+ │   • shows the pages          • scans new files and USB drives      │
  │                              • daily quick scan                    │
  │          │  both read the system as a normal user                  │
  └──────────┼─────────────────────────────────────────────────────────┘

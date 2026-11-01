@@ -34,12 +34,57 @@ company policy forces it):
 
 - **Daily quick scan**: once every 24 hours, at least 10 minutes after login, at the lowest CPU and disk
   priority, and not on battery below 30%. Notifies only when a threat is found.
-- **Download check**: every new file in `~/Downloads` (and its direct subfolders) is scanned once it stops
-  growing. Partial downloads (`.part`, `.crdownload`…), hidden files and files over 1 GB are skipped. You get a
-  notification either way ("… is safe" or "Threat found").
-- **USB drive check**: a drive opened under `/media` or `/run/media` is scanned: programs, documents and
-  archives, up to 3000 files, skipping photos, music, videos and files over 100 MB. Notifications at the start
-  and with the result.
+- **New file check** (setting *Scan new files…*, policy key `scan_downloads`): new files are scanned once they
+  stop growing, in every place files arrive:
+
+  | Place | Looks at | You are told |
+  |---|---|---|
+  | Downloads (`xdg-user-dir DOWNLOAD`) and its direct subfolders | every file | either way ("… is safe" / "Threat found") |
+  | Flatpak apps' own `~/.var/app/<app>/Downloads` | every file | either way |
+  | The desktop (`xdg-user-dir DESKTOP`) | every file | only threats |
+  | `/tmp/mozilla_<user>0` (files opened from Firefox or Thunderbird without saving) | every file | only threats |
+  | `/tmp` and `/dev/shm`, files directly in them | only your own risky files | only threats |
+
+  Partial downloads (`.part`, `.crdownload`, Chrome's hidden temporary files…) are skipped. Hidden files and
+  files over 1 GB are checked only when they are risky. Risky files are checked first.
+- **Risky files** ([`src/risk.rs`](../src/risk.rs)) are programs, scripts, installers, documents that can carry
+  macros or exploits, and archives, recognized three ways: by name (`.sh .bash .run .bin .AppImage .deb .rpm
+  .snap .flatpak .flatpakref .desktop .py .pl .rb .php .js .jar`, `.exe .msi .com .scr .dll .bat .cmd .ps1 .vbs
+  .hta .lnk`, `.pdf .rtf .doc .xls .ppt .docm .xlsm .pptm .odt .ods`, `.zip .7z .rar .tar .gz .tgz .xz .bz2 .zst
+  .iso .img .cab`), by content (the first bytes of a Linux or Windows program, a script, PDF, Office document or
+  archive, so a program renamed `photo.jpg` still counts), or by the executable bit (not on USB drives, where
+  FAT/exFAT/NTFS often mark every file as runnable).
+- **Re-check after a definition update**: clean files from the new file, startup and download checks are
+  remembered for 7 days (at most 2000). When the files in `/var/lib/clamav` change, at most once every 4 hours,
+  at least 10 minutes after login and not on battery below 30%, they are scanned again at idle CPU and disk
+  priority. You hear about it only if a threat is found (then it is also in the history).
+- **Startup watch** (setting *Tell me when a program is set to start automatically*, policy key
+  `watch_startup`), see [`src/startup.rs`](../src/startup.rs). Every 30 seconds the tray compares the sizes and
+  dates of the places programs use to start automatically with what it saw before (kept in
+  `startup-baseline.json`, so changes made while it wasn't running are noticed at the next login). Each new or
+  changed item is scanned with ClamAV:
+
+  | Place | You are told when |
+  |---|---|
+  | `~/.config/autostart` (sign-in programs) | an item is added or now runs a different program, unless it is switched off (`Hidden=true`) |
+  | `~/.config/systemd/user` (background tasks, `systemctl --user enable`) | a unit or enable link is added, or a unit runs a different program |
+  | `~/.config/plasma-workspace/env`, `…/shutdown` (KDE sign-in/out scripts) | a script is added or gets new lines |
+  | `.bashrc .profile .bash_profile .bash_login .bash_logout .zshrc .zprofile` | an added line looks suspicious |
+  | `~/.local/bin` (personal programs) | a new script looks suspicious |
+  | `~/.local/share/applications` (app shortcuts) | a shortcut runs something suspicious |
+
+  and always when ClamAV finds a threat. "Suspicious" means downloading (`curl`, `wget`), decoding hidden text
+  (`base64 -d`), opening network connections (`/dev/tcp/`, `nc -e`, `socat`), running inline Python/Perl, piping
+  text into a shell (`| sh`), running from `/tmp`, `/dev/shm`, Downloads, `~/.cache` or `~/.config`, `LD_PRELOAD`,
+  or replacing `sudo`/`su` with an alias. Ordinary installer lines (`. "$HOME/.cargo/env"`, `export PATH=…`) stay
+  quiet.
+- **USB drive check**: a drive opened under `/media` or `/run/media` is scanned, up to 3000 files: risky files
+  first and whatever their size, then other files up to 100 MB, skipping photos, music and videos. Notifications
+  at the start and with the result.
+
+Background scans run ClamAV at low CPU priority (`nice 15`) and the lowest normal disk priority (`ionice -c2 -n7`);
+re-checks at idle priority (`nice 19`, `ionice -c3`). With `clamscan`, files up to 2 GB are scanned (at most 512 MB
+of each); with the ClamAV daemon, its own limits in `/etc/clamav/clamd.conf` apply.
 
 All scans are recorded in the protection history (kept 30 days; scans with unhandled threats are kept until
 handled).

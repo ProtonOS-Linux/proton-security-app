@@ -133,11 +133,20 @@ impl App {
             let forced_dl = pol.scan_downloads != crate::policy::Forced::No;
             let mut dl = crate::policy::effective(st.scan_downloads, pol.scan_downloads);
             if ui
-                .add_enabled(!forced_dl, egui::Checkbox::new(&mut dl, "Scan new files in my Downloads folder"))
-                .on_hover_text("The tray icon checks each new download with ClamAV as soon as it has finished downloading, and warns you if it is dangerous.")
+                .add_enabled(!forced_dl, egui::Checkbox::new(&mut dl, "Scan new files in Downloads, on the desktop and other places files arrive"))
+                .on_hover_text("The tray icon checks each new download with ClamAV as soon as it has finished downloading, and warns you if it is dangerous. It also quietly checks new files on the desktop, in apps' download folders, files you open straight from the browser or email, and programs and scripts saved in temporary folders. Programs, scripts, documents and archives are checked first. When the virus definitions are updated, the last week's new files are checked again.")
                 .changed()
             {
                 crate::settings::update(|s| s.scan_downloads = dl);
+            }
+            let forced_st = pol.watch_startup != crate::policy::Forced::No;
+            let mut stw = crate::policy::effective(st.watch_startup, pol.watch_startup);
+            if ui
+                .add_enabled(!forced_st, egui::Checkbox::new(&mut stw, "Tell me when a program is set to start automatically"))
+                .on_hover_text("Malware often adds itself to the programs that start when you sign in. The tray icon watches those places (sign-in programs, background tasks, KDE session scripts, .bashrc and .profile, your personal programs and app shortcuts), checks every new item for viruses, and tells you about new sign-in programs and anything that looks suspicious.")
+                .changed()
+            {
+                crate::settings::update(|s| s.watch_startup = stw);
             }
             let forced_usb = pol.scan_usb != crate::policy::Forced::No;
             let mut usb = crate::policy::effective(st.scan_usb, pol.scan_usb);

@@ -11,7 +11,8 @@
 
 # Force user settings: force-on, force-off, or leave unset to let users choose.
 #daily_scan = force-on          # daily automatic quick scan
-#scan_downloads = force-on      # scan new files in Downloads
+#scan_downloads = force-on      # scan new files in Downloads, on the desktop, in /tmp…
+#watch_startup = force-on       # tell users when a program is set to start automatically
 #usb_alerts = force-on          # notify when a new USB keyboard/network/storage device appears
 #scan_usb = force-on            # quick-scan USB drives and memory cards when they are opened
 
