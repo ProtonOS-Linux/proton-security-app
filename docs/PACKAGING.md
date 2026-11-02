@@ -64,9 +64,14 @@ root. It does nothing when there are no desktop sessions, for example inside a c
 
 The Proton OS ISO is made with [penguins-eggs](https://penguins-eggs.net) from a prepared system:
 
-1. Install the package and its recommended tools on the source system:
+1. Add the [Proton OS package repository](https://github.com/ProtonOS-Linux/apt) and install the package with
+   its recommended tools on the source system. Every computer installed from the ISO then gets new versions
+   through KDE Discover and automatic updates:
    ```bash
-   sudo PROTON_SECURITY_NO_LAUNCH=1 apt install ./proton-security_*_amd64.deb
+   wget https://protonos-linux.github.io/apt/proton-os-archive-keyring.deb
+   sudo apt install ./proton-os-archive-keyring.deb
+   sudo apt update
+   sudo PROTON_SECURITY_NO_LAUNCH=1 apt install proton-security
    ```
 2. Optional, for a smoother first run:
    - Format `/` as **Btrfs** in the installer, so restore points work, and run *Turn on* for System restore once
@@ -92,4 +97,5 @@ User data lives in each user's home folder, so nothing personal ends up in the I
 
 The [release workflow](../.github/workflows/release.yml) then builds the `.deb` from that tag (it checks the tag
 matches the version in `Cargo.toml`) and attaches it to the release with its SHA-256 checksum and the notes from
-`CHANGELOG.md`.
+`CHANGELOG.md`. Within an hour the [Proton OS package repository](https://github.com/ProtonOS-Linux/apt) picks it
+up, so computers get it as a normal update (in KDE Discover, or automatically).

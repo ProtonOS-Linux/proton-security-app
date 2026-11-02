@@ -75,12 +75,20 @@ permissions**, **USB device alerts** (a new "keyboard" could be a malicious USB 
 
 ## Install
 
-Proton OS ships Proton Security preinstalled. On another Debian 13 (or newer) system with KDE Plasma, download
-the `.deb` from the [latest release](https://github.com/ProtonOS-Linux/proton-security-app/releases/latest) and run:
+Proton OS ships Proton Security preinstalled, and updates it through the
+[Proton OS package repository](https://github.com/ProtonOS-Linux/apt) (in KDE Discover, or automatically). On another
+Debian 13 (or newer) system with KDE Plasma, add that repository and install it:
 
 ```bash
-sudo apt install ./proton-security_*_amd64.deb
+wget https://protonos-linux.github.io/apt/proton-os-archive-keyring.deb
+sudo apt install ./proton-os-archive-keyring.deb
+sudo apt update
+sudo apt install proton-security
 ```
+
+New versions then arrive with your other updates. You can also download the `.deb` from the
+[latest release](https://github.com/ProtonOS-Linux/proton-security-app/releases/latest) and install it with
+`sudo apt install ./proton-security_*_amd64.deb` (no automatic updates).
 
 `apt` also installs the recommended tools (ClamAV, Snapper, UFW, unattended-upgrades, Kup…). The tray icon
 starts immediately and at every login.
