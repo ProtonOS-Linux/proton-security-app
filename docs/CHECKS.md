@@ -82,6 +82,10 @@ company policy forces it):
   first and whatever their size, then other files up to 100 MB, skipping photos, music and videos. Notifications
   at the start and with the result.
 
+When ClamAV can't run at all (no virus definitions, a damaged database), a manual scan says so ("Quick scan
+could not run. The virus definitions are missing…") instead of "no threats found in 0 files", and that scan
+doesn't count as a recent scan.
+
 Background scans run ClamAV at low CPU priority (`nice 15`) and the lowest normal disk priority (`ionice -c2 -n7`);
 re-checks at idle priority (`nice 19`, `ionice -c3`). With `clamscan`, files up to 2 GB are scanned (at most 512 MB
 of each); with the ClamAV daemon, its own limits in `/etc/clamav/clamd.conf` apply.

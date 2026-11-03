@@ -104,7 +104,7 @@ The window builds these command lines; each is shown here with what it changes.
 | `fw-block-ip <address>` | Deny in and out for one address (rule placed first), end its open connections (`ss -K`) |
 | `fw-unblock-ip <address>` | Undo `fw-block-ip` |
 | `fw-rules` | Print `ufw status verbose` (read only) |
-| `fw-log` | Print the last 300 firewall log lines (read only) |
+| `fw-log` | Print the last 300 firewall log lines from the journal, kernel messages only (read only; `/var/log/ufw.log` is not used because any program can add fake lines to it) |
 
 ### System restore
 
@@ -173,6 +173,28 @@ names were split in two and never scanned by the background checks (finding 2). 
    failed move never leaves a copy of the dangerous file in the quarantine folder.
 
 `antivirus::safe_scan_tests` replays the original proof of concept against the real scan code and ClamAV.
+
+### Second-opinion reviews (0.4.10)
+
+Outside reviews of the code were checked finding by finding. Fixed in 0.4.10, all hardening (none was
+exploitable):
+
+- The signed-in user is found from the real user ID (owner of `/proc/self`), not `$USER`.
+- `write_ini_keys` refuses line breaks and saves through a temporary file and a rename (symlinked configs keep
+  their link).
+- Recovery-key lines are hidden from the task log on the helper's error output too.
+- Files scanned one by one through standard input are opened with `O_NOFOLLOW` (and `O_NONBLOCK`) and the
+  *opened* file is checked to be a regular file, so a file swapped for a link or a pipe after the folder walk is
+  refused.
+- The helper only accepts plain firmware names from `modinfo` (no `..`, spaces or wildcards) and keeps
+  package lists in Bash arrays.
+- The firewall log is read only from kernel messages in the journal; fields are shown only when they are a real
+  IP address, port, interface or MAC; `/proc/net` addresses must be hex digits before they are cut up.
+
+Rejected after checking: the debug-only `PROTON_SECURITY_HELPER` override (compiled out of releases; polkit
+still asks for the password for any other program), shell injection through helper arguments (no shell, no
+`eval`, every argument validated and quoted), and "fixing" `luks-header-backup` by preparing the file as root
+and moving it into the user's folder: that is the pattern that was vulnerable before 0.4.7 (audit finding 3).
 
 ### Shared temporary folders
 

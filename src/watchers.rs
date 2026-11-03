@@ -551,18 +551,6 @@ pub struct ScanOutcome {
     pub failed: Option<String>,
 }
 
-/// Turn clamscan's error output into a sentence for a notification.
-fn explain_failure(stderr: &str) -> String {
-    let s = stderr.to_lowercase();
-    if s.contains("no supported database") || s.contains("cli_loaddb") || s.contains("database") {
-        "The virus definitions are missing. Open Proton Security → Virus & threat protection and click \"Check for updates\".".into()
-    } else if let Some(l) = stderr.lines().find(|l| !l.trim().is_empty()) {
-        format!("ClamAV reported: {}", l.trim())
-    } else {
-        "ClamAV could not run.".into()
-    }
-}
-
 /// Scan files with clamd if it runs (fast), otherwise clamscan (slow start).
 ///
 /// Plain names go to ClamAV in a private list (`--file-list`); a result counts only when it names
@@ -660,7 +648,7 @@ pub fn scan_files_with(files: &[PathBuf], priority: Priority) -> ScanOutcome {
         // Exit code: 0 clean, 1 virus found, 2 error. With 2 and nothing answered, the scan
         // itself failed (no definitions, daemon down…).
         if out.status.code() == Some(2) && answered == 0 && outcome.errors == 0 {
-            outcome.failed = Some(explain_failure(&stderr));
+            outcome.failed = Some(antivirus::explain_failure(&stderr));
             return outcome;
         }
     }
@@ -730,6 +718,7 @@ pub fn record_scan(kind: &str, targets: Vec<String>, files: u64, outcome: &ScanO
         cancelled: false,
         targets,
         threats: outcome.threats.clone(),
+        problem: outcome.failed.clone(),
     });
     antivirus::save_history(&h);
 }

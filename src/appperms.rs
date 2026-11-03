@@ -98,8 +98,14 @@ pub fn parse_permissions(text: &str) -> Vec<Perm> {
     parse_with_overrides(text, "")
 }
 
+#[cfg(test)]
 pub fn parse_with_overrides(text: &str, overrides: &str) -> Vec<Perm> {
-    let mut v = base_permissions(text);
+    apply_overrides(base_permissions(text), overrides)
+}
+
+/// Apply one overrides file (`[Context]` keys, where "!name" takes a permission away) to a set
+/// of permissions.
+fn apply_overrides(mut v: Vec<Perm>, overrides: &str) -> Vec<Perm> {
     let ini = crate::account::read_ini(overrides);
     let ctx = ini.get("Context").cloned().unwrap_or_default();
     for (key, val) in &ctx {
@@ -129,6 +135,7 @@ pub fn parse_with_overrides(text: &str, overrides: &str) -> Vec<Perm> {
     Perm::ALL.into_iter().filter(|p| v.contains(p)).collect()
 }
 
+/// The permissions an app's own `metadata` (or `flatpak info --show-permissions`) grants.
 fn base_permissions(text: &str) -> Vec<Perm> {
     let ini = crate::account::read_ini(text);
     let ctx = ini.get("Context").cloned().unwrap_or_default();
@@ -166,31 +173,107 @@ fn base_permissions(text: &str) -> Vec<Perm> {
     v
 }
 
+/// Where Flatpak keeps the system-wide and this user's installations.
+const SYSTEM_FLATPAK: &str = "/var/lib/flatpak";
+
+/// This user's Flatpak folder (`~/.local/share/flatpak`).
+fn user_flatpak() -> std::path::PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| sys::home().join(".local/share"))
+        .join("flatpak")
+}
+
+/// True for a Flatpak application ID (`org.mozilla.firefox`): only these are turned into paths.
+fn valid_app_id(id: &str) -> bool {
+    id.len() <= 255
+        && id.contains('.')
+        && !id.starts_with('.')
+        && !id.contains("..")
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+}
+
+/// The permissions an app asks for (its `metadata` file), from the installation it is in
+/// (`user` or `system`). Read straight from the file instead of starting `flatpak info` once per
+/// app; falls back to `flatpak info` for other installations.
+fn app_metadata(id: &str, installation: &str) -> String {
+    let user = user_flatpak()
+        .join("app")
+        .join(id)
+        .join("current/active/metadata");
+    let system = std::path::Path::new(SYSTEM_FLATPAK)
+        .join("app")
+        .join(id)
+        .join("current/active/metadata");
+    let order = if installation == "user" {
+        [user, system]
+    } else {
+        [system, user]
+    };
+    order
+        .iter()
+        .find_map(sys::read)
+        .or_else(|| sys::run_out("flatpak", &["info", "--show-permissions", id]))
+        .unwrap_or_default()
+}
+
+/// The overrides Flatpak applies on top of an app's own permissions, in Flatpak's order (later
+/// ones win): system-wide for all apps, system-wide for this app, this user's for all apps,
+/// this user's for this app. Returns them joined, and whether this user changed this app.
+fn overrides(id: &str) -> (Vec<String>, bool) {
+    let sys_dir = std::path::Path::new(SYSTEM_FLATPAK).join("overrides");
+    let user_dir = user_flatpak().join("overrides");
+    let user_app = sys::read(user_dir.join(id)).unwrap_or_default();
+    // "Changed by you": the user's own file for this app sets something.
+    let overridden = crate::account::read_ini(&user_app)
+        .values()
+        .any(|g| !g.is_empty());
+    let all = [
+        sys::read(sys_dir.join("global")).unwrap_or_default(),
+        sys::read(sys_dir.join(id)).unwrap_or_default(),
+        sys::read(user_dir.join("global")).unwrap_or_default(),
+        user_app,
+    ];
+    (
+        all.into_iter().filter(|t| !t.is_empty()).collect(),
+        overridden,
+    )
+}
+
+/// Every installed Flatpak app with its permissions after overrides. Runs `flatpak list` once;
+/// the permissions themselves are read from Flatpak's files (a few small reads per app).
 pub fn load() -> Vec<AppPerms> {
     if sys::which("flatpak").is_none() {
         return vec![];
     }
-    let list = sys::run_out("flatpak", &["list", "--app", "--columns=application,name"])
-        .unwrap_or_default();
+    let list = sys::run_out(
+        "flatpak",
+        &["list", "--app", "--columns=application,name,installation"],
+    )
+    .unwrap_or_default();
     let mut apps: Vec<AppPerms> = list
         .lines()
         .filter_map(|l| {
             let mut f = l.split('\t');
             let id = f.next()?.trim().to_string();
-            if id.is_empty() || id == "Application ID" {
-                return None;
+            if !valid_app_id(&id) {
+                return None; // also skips a header line
             }
             let name = f
                 .next()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| id.clone());
-            let base =
-                sys::run_out("flatpak", &["info", "--show-permissions", &id]).unwrap_or_default();
-            let over =
-                sys::run_out("flatpak", &["override", "--user", "--show", &id]).unwrap_or_default();
-            let perms = parse_with_overrides(&base, &over);
-            let overridden = over.lines().any(|l| l.contains('='));
+            let installation = f.next().map(str::trim).unwrap_or("system");
+            let base = app_metadata(&id, installation);
+            let (layers, overridden) = overrides(&id);
+            let mut perms = base_permissions(&base);
+            for layer in &layers {
+                perms = apply_overrides(perms, layer);
+            }
             Some(AppPerms {
                 id,
                 name,
@@ -248,5 +331,24 @@ mod tests {
         assert_eq!(o, vec![Perm::Audio, Perm::Network]);
         let add = parse_with_overrides("[Context]\n", "[Context]\nfilesystems=host;\n");
         assert_eq!(add, vec![Perm::AllFiles]);
+        // Layers in order: a system-wide "no network" is undone by the user's own override.
+        let mut v = base_permissions(t);
+        for layer in [
+            "[Context]\nshared=!network;\n",
+            "[Context]\nshared=network;\n",
+        ] {
+            v = apply_overrides(v, layer);
+        }
+        assert!(v.contains(&Perm::Network));
+    }
+
+    #[test]
+    fn app_ids_are_checked() {
+        assert!(valid_app_id("org.mozilla.firefox"));
+        assert!(valid_app_id("com.valvesoftware.Steam"));
+        assert!(!valid_app_id("Application ID"));
+        assert!(!valid_app_id("../../etc"));
+        assert!(!valid_app_id("org..x"));
+        assert!(!valid_app_id("noperiod"));
     }
 }

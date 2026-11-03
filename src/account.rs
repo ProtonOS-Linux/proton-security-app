@@ -198,7 +198,26 @@ pub fn read_ini(text: &str) -> BTreeMap<String, BTreeMap<String, String>> {
 }
 
 /// Set keys in one group of an ini file, keeping everything else.
+///
+/// The group, keys and values may not contain line breaks (they would add lines of their own).
+/// The file is written to a temporary name next to it and renamed, so a crash never leaves it
+/// half-written; when `path` is a symbolic link (dotfiles kept elsewhere), the file it points
+/// to is updated and the link stays.
 pub fn write_ini_keys(path: &Path, group: &str, keys: &[(&str, &str)]) -> std::io::Result<()> {
+    let has_break = |s: &str| s.contains(['\n', '\r']);
+    if has_break(group) || keys.iter().any(|(k, v)| has_break(k) || has_break(v)) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "settings can't contain line breaks",
+        ));
+    }
+    let resolved;
+    let path = if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        resolved = std::fs::canonicalize(path)?;
+        resolved.as_path()
+    } else {
+        path
+    };
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut lines: Vec<String> = text.lines().map(String::from).collect();
     let header = format!("[{group}]");
@@ -243,7 +262,32 @@ pub fn write_ini_keys(path: &Path, group: &str, keys: &[(&str, &str)]) -> std::i
     }
     let mut out = lines.join("\n");
     out.push('\n');
-    std::fs::write(path, out)
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.proton-security-tmp"));
+    let _ = std::fs::remove_file(&tmp);
+    // Keep the file's permissions (a private config stays private).
+    let mode = std::fs::metadata(path)
+        .map(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o777)
+        .unwrap_or(0o644);
+    let res = (|| {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&tmp)?;
+        f.write_all(out.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
 }
 
 /// `$XDG_CONFIG_HOME`, normally `~/.config`.
@@ -356,13 +400,27 @@ pub fn autologin() -> Option<(String, String)> {
 
 // ------------------------------------------------------------------ password & admins
 
-/// The signed-in user name ($USER, or `id -un`).
+/// The signed-in user name, from the real user ID this program runs as (the owner of
+/// `/proc/self`), looked up in `/etc/passwd`, or with `id -un` for accounts that live elsewhere
+/// (LDAP, a company directory). `$USER` is not used: any program can set it to another name.
 pub fn current_user() -> String {
-    std::env::var("USER")
-        .ok()
-        .filter(|u| !u.is_empty())
-        .or_else(|| sys::run_out("id", &["-un"]).map(|s| s.trim().to_string()))
+    let uid = crate::watchers::my_uid();
+    if let Some(name) = sys::read("/etc/passwd").and_then(|t| user_name_for(&t, uid)) {
+        return name;
+    }
+    sys::run_out("id", &["-un"])
+        .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// The name of user `uid` in `/etc/passwd`-format text (`name:x:uid:gid:…`).
+fn user_name_for(passwd: &str, uid: u32) -> Option<String> {
+    passwd.lines().find_map(|l| {
+        let mut f = l.split(':');
+        let name = f.next()?;
+        let id: u32 = f.nth(1)?.parse().ok()?;
+        (id == uid && !name.is_empty()).then(|| name.to_string())
+    })
 }
 
 /// Password status of `user` from `passwd -S` (allowed for your own account without
@@ -377,6 +435,33 @@ pub fn password_status(user: &str) -> Option<PasswordStatus> {
         "L" | "LK" => PasswordStatus::Locked,
         _ => PasswordStatus::Unknown,
     })
+}
+
+/// The last `passwd -S` answer: (user, modification time of /etc/shadow, status).
+type PasswordCache = Option<(
+    String,
+    Option<std::time::SystemTime>,
+    Option<PasswordStatus>,
+)>;
+/// See [`password_status_cached`].
+static PASSWORD_CACHE: std::sync::Mutex<PasswordCache> = std::sync::Mutex::new(None);
+
+/// [`password_status`], run again only when `/etc/shadow` changed (its date can be read without
+/// administrator rights). The tray checks the account every 5 seconds; this saves starting
+/// `passwd` each time.
+fn password_status_cached(user: &str) -> Option<PasswordStatus> {
+    let stamp = sys::mtime("/etc/shadow");
+    let mut c = PASSWORD_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((u, t, st)) = c.as_ref()
+        && u == user
+        && *t == stamp
+        && stamp.is_some()
+    {
+        return st.clone();
+    }
+    let st = password_status(user);
+    *c = Some((user.to_string(), stamp, st.clone()));
+    st
 }
 
 /// Accounts that can become administrator: members of the `sudo`, `wheel` or `admin` groups in
@@ -403,7 +488,7 @@ pub fn load() -> AccountState {
     let user = current_user();
     let admins = admins();
     AccountState {
-        password: password_status(&user),
+        password: password_status_cached(&user),
         lock: screen_lock(),
         autologin: autologin(),
         is_admin: admins.contains(&user),
@@ -469,6 +554,58 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(parse_inhibitions_json(r#"{"type":"a(ss)","data":[[]]}"#).is_empty());
+    }
+
+    #[test]
+    fn user_from_passwd() {
+        let t =
+            "root:x:0:0:root:/root:/bin/bash\nana:x:1000:1000:Ana,,,:/home/ana:/bin/bash\nbroken\n";
+        assert_eq!(user_name_for(t, 1000).as_deref(), Some("ana"));
+        assert_eq!(user_name_for(t, 0).as_deref(), Some("root"));
+        assert_eq!(user_name_for(t, 1001), None);
+    }
+
+    #[test]
+    fn gdbus_escaped_quotes() {
+        let g = r"([('Firefox', 'Playing \'Song\' video')],)";
+        assert_eq!(
+            parse_inhibitions_gdbus(g),
+            vec![("Firefox".to_string(), "Playing 'Song' video".to_string())]
+        );
+    }
+
+    #[test]
+    fn ini_write_is_safe() {
+        let dir = std::env::temp_dir().join(format!("ps-ini-safe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dotfiles")).unwrap();
+        // Line breaks would add settings of their own: refused, file untouched.
+        let f = dir.join("rc");
+        std::fs::write(&f, "[Daemon]\nTimeout=5\n").unwrap();
+        assert!(write_ini_keys(&f, "Daemon", &[("Timeout", "5\nAutolock=false")]).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "[Daemon]\nTimeout=5\n"
+        );
+        // A symlinked config: the target is updated, the link stays a link.
+        let target = dir.join("dotfiles/kscreenlockerrc");
+        std::fs::write(&target, "[Daemon]\nTimeout=30\n").unwrap();
+        let link = dir.join("kscreenlockerrc");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_ini_keys(&link, "Daemon", &[("Timeout", "10")]).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            read_ini(&std::fs::read_to_string(&target).unwrap())["Daemon"]["Timeout"],
+            "10"
+        );
+        // No temporary file is left behind.
+        assert_eq!(std::fs::read_dir(dir.join("dotfiles")).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

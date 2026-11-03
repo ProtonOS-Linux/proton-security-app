@@ -132,6 +132,16 @@ pub fn spawn(title: &str, args: &[&str], visible: bool, ctx: &egui::Context) -> 
 /// Lines starting with this are secrets meant for the app, never the log window.
 pub const SECRET_PREFIX: &str = "RECOVERY-KEY:";
 
+/// What the log window shows for a line of the helper's output: secret lines (see
+/// [`SECRET_PREFIX`]) are replaced, wherever in the line the prefix appears.
+fn log_line(line: String) -> String {
+    if line.contains(SECRET_PREFIX) {
+        "(The recovery key is shown in its own window.)".into()
+    } else {
+        line
+    }
+}
+
 /// Like `spawn`, but writes `input` (e.g. a disk password) to the helper's
 /// standard input. Secrets never appear on the command line.
 pub fn spawn_with_input(
@@ -183,7 +193,9 @@ pub fn spawn_with_input(
                 let (log, ctx) = (log.clone(), ctx.clone());
                 std::thread::spawn(move || {
                     for line in BufReader::new(err).lines().map_while(Result::ok) {
-                        log.lock().unwrap().push(line);
+                        // The helper prints secrets on standard output only; hide them here too,
+                        // in case a tool ever echoes one on its error output.
+                        log.lock().unwrap().push(log_line(line));
                         ctx.request_repaint();
                     }
                 })
@@ -195,13 +207,7 @@ pub fn spawn_with_input(
                     s.push_str(&line);
                     s.push('\n');
                 }
-                if line.starts_with(SECRET_PREFIX) {
-                    log.lock()
-                        .unwrap()
-                        .push("(The recovery key is shown in its own window.)".into());
-                } else {
-                    log.lock().unwrap().push(line);
-                }
+                log.lock().unwrap().push(log_line(line));
                 ctx.request_repaint();
             }
             let _ = err_thread.join();
@@ -267,6 +273,13 @@ mod tests {
                 "{c} is not a command of the helper"
             );
         }
+    }
+
+    #[test]
+    fn secrets_never_reach_the_log() {
+        assert!(!log_line("RECOVERY-KEY: 123456-654321".into()).contains("123456"));
+        assert!(!log_line("cryptsetup: RECOVERY-KEY: 123456".into()).contains("123456"));
+        assert_eq!(log_line("==> Done".into()), "==> Done");
     }
 
     #[test]

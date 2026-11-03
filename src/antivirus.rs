@@ -140,6 +140,10 @@ pub struct ScanRecord {
     pub targets: Vec<String>,
     /// Threats found.
     pub threats: Vec<Threat>,
+    /// Why ClamAV could not run (missing virus definitions, …). A scan with a problem doesn't
+    /// count as a recent scan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 impl ScanRecord {
@@ -217,9 +221,9 @@ fn write_history(h: &[ScanRecord]) {
     }
 }
 
-/// Most recent scan that was not cancelled.
+/// Most recent scan that was not cancelled and did run.
 pub fn last_completed_scan(h: &[ScanRecord]) -> Option<&ScanRecord> {
-    h.iter().rev().find(|r| !r.cancelled)
+    h.iter().rev().find(|r| !r.cancelled && r.problem.is_none())
 }
 
 /// Current Unix time in seconds.
@@ -527,6 +531,8 @@ pub struct ScanProgress {
     pub started: i64,
     /// The history record, once finished.
     pub result: Option<ScanRecord>,
+    /// Why ClamAV could not run, if it couldn't (see [`explain_failure`]).
+    pub problem: Option<String>,
 }
 
 /// A running scan.
@@ -702,12 +708,7 @@ pub fn parse_clam_line(line: &str) -> Option<ClamLine> {
 /// Scan one file through ClamAV's standard input, so its name never appears in ClamAV's output.
 /// Returns the signature when something was found. Used for files with unusual names.
 pub fn scan_via_stdin(p: &Path, use_daemon: bool) -> Result<Option<String>, String> {
-    // Never follow a symlink that replaced the file after the folder walk.
-    match std::fs::symlink_metadata(p) {
-        Ok(m) if m.file_type().is_file() => {}
-        _ => return Err("not a regular file".into()),
-    }
-    let file = std::fs::File::open(p).map_err(|e| e.to_string())?;
+    let file = open_regular_file(p)?;
     let (cmd, args): (&str, &[&str]) = if use_daemon {
         ("clamdscan", &["--no-summary", "--stdout", "-"])
     } else {
@@ -718,7 +719,7 @@ pub fn scan_via_stdin(p: &Path, use_daemon: bool) -> Result<Option<String>, Stri
         .args(args)
         .env("LC_ALL", "C")
         .stdin(Stdio::from(file))
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .output()
         .map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -732,7 +733,45 @@ pub fn scan_via_stdin(p: &Path, use_daemon: bool) -> Result<Option<String>, Stri
     }
     match out.status.code() {
         Some(0) => Ok(None),
-        _ => Err("ClamAV could not check the file".into()),
+        _ => Err(explain_failure(&String::from_utf8_lossy(&out.stderr))),
+    }
+}
+
+/// Open `p` for reading only if it is a regular file, without following a symbolic link at the
+/// last step (`O_NOFOLLOW`), and check the file that was actually opened (not the name again):
+/// a file swapped for a link, a pipe or a device after the folder walk is refused. Opening a
+/// pipe never blocks (`O_NONBLOCK`; it is refused right after).
+pub fn open_regular_file(p: &Path) -> Result<std::fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // The flag values differ between processor types, so they come from `libc`.
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(p)
+        .map_err(|e| {
+            if e.raw_os_error() == Some(libc::ELOOP) {
+                "not a regular file (a link)".to_string() // the name is a symbolic link
+            } else {
+                e.to_string()
+            }
+        })?;
+    match f.metadata() {
+        Ok(m) if m.file_type().is_file() => Ok(f),
+        _ => Err("not a regular file".into()),
+    }
+}
+
+/// Turn ClamAV's error output into a sentence for the user (a notification or the scan
+/// result).
+pub fn explain_failure(stderr: &str) -> String {
+    let s = stderr.to_lowercase();
+    if s.contains("no supported database") || s.contains("cli_loaddb") || s.contains("database") {
+        "The virus definitions are missing. Open Proton Security → Virus & threat protection and click \"Check for updates\".".into()
+    } else if let Some(l) = stderr.lines().find(|l| !l.trim().is_empty()) {
+        let l: String = l.trim().chars().take(200).collect();
+        format!("ClamAV reported: {l}")
+    } else {
+        "ClamAV could not run.".into()
     }
 }
 
@@ -755,6 +794,7 @@ pub fn start_scan(kind: ScanKind, targets: Vec<PathBuf>, ctx: Option<&egui::Cont
         threats: vec![],
         started,
         result: None,
+        problem: None,
     });
     let cancel = Arc::new(AtomicBool::new(false));
     let (p, c) = (progress.clone(), cancel.clone());
@@ -870,6 +910,7 @@ pub fn start_scan(kind: ScanKind, targets: Vec<PathBuf>, ctx: Option<&egui::Cont
                 files: g.scanned,
                 errors: g.errors,
                 cancelled,
+                problem: g.problem.clone(),
                 targets: targets
                     .iter()
                     .map(|t| t.to_string_lossy().into_owned())
@@ -908,7 +949,7 @@ fn run_clamscan_listing(
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn();
     let mut child = match child {
         Err(e) => {
@@ -920,6 +961,15 @@ fn run_clamscan_listing(
         Ok(c) => c,
     };
     let out = child.stdout.take().unwrap();
+    // ClamAV's error messages (kept up to 8 KB) explain a scan that could not run.
+    let err_reader = child.stderr.take().map(|e| {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            let _ = e.take(8192).read_to_end(&mut buf);
+            String::from_utf8_lossy(&buf).into_owned()
+        })
+    });
     // Watch for cancel in a side thread so a slow file does not block it.
     let pid = child.id();
     let done = Arc::new(AtomicBool::new(false));
@@ -963,9 +1013,16 @@ fn run_clamscan_listing(
             last_paint = std::time::Instant::now();
         }
     }
-    let _ = child.wait();
+    let status = child.wait();
     done.store(true, Ordering::SeqCst);
     let _ = watcher.join();
+    let stderr = err_reader.and_then(|t| t.join().ok()).unwrap_or_default();
+    // Exit code 2 with no file answered: ClamAV itself could not run (no definitions…).
+    let mut g = p.lock().unwrap();
+    if status.ok().and_then(|s| s.code()) == Some(2) && g.scanned == 0 && !c.load(Ordering::SeqCst)
+    {
+        g.problem = Some(explain_failure(&stderr));
+    }
 }
 
 /// Update the stored action of a threat in the scan history.
@@ -1028,6 +1085,7 @@ mod history_tests {
             } else {
                 vec![]
             },
+            problem: None,
         }
     }
 
@@ -1053,6 +1111,44 @@ mod history_tests {
 #[cfg(test)]
 mod safe_scan_tests {
     use super::*;
+
+    #[test]
+    fn opens_only_regular_files() {
+        let d = std::env::temp_dir().join(format!("ps-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(open_regular_file(&file).is_ok());
+        // A link (even to a regular file) is refused: it may have replaced the file.
+        let link = d.join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(open_regular_file(&link).is_err());
+        // A folder, and a pipe (opening it must not hang).
+        assert!(open_regular_file(&d).is_err());
+        let fifo = d.join("fifo");
+        if std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            assert!(open_regular_file(&fifo).is_err());
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn clamav_errors_become_sentences() {
+        assert!(
+            explain_failure("LibClamAV Error: cli_loaddb(): No supported database files found")
+                .contains("definitions are missing")
+        );
+        assert_eq!(
+            explain_failure("\nERROR: Can't allocate memory\n"),
+            "ClamAV reported: ERROR: Can't allocate memory"
+        );
+        assert_eq!(explain_failure(""), "ClamAV could not run.");
+    }
 
     #[test]
     fn only_absolute_plain_paths_are_accepted() {

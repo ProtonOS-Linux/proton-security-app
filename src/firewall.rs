@@ -236,6 +236,11 @@ impl Conn {
 fn parse_hex_addr(s: &str) -> Option<(IpAddr, u16)> {
     let (a, p) = s.split_once(':')?;
     let port = u16::from_str_radix(p, 16).ok()?;
+    // Only hex digits: slicing below counts bytes, which would panic inside a multi-byte
+    // character (the kernel only writes hex here; this is defence in depth).
+    if !a.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     let ip = match a.len() {
         8 => {
             let v = u32::from_str_radix(a, 16).ok()?;
@@ -719,12 +724,28 @@ pub fn parse_log_line(line: &str) -> Option<LogEntry> {
     };
     let src = field(line, "SRC").unwrap_or("");
     let dst = field(line, "DST").unwrap_or("");
-    let address = if direction == "Outgoing" { dst } else { src }.to_string();
+    // Shown only when it really is an IP address.
+    let address = if direction == "Outgoing" { dst } else { src }
+        .parse::<IpAddr>()
+        .map(|ip| ip.to_string())
+        .unwrap_or_default();
+    // Interface names and protocols: short names of letters, digits and a few symbols.
+    let word = |v: &str, max: usize| {
+        if v.len() <= max
+            && v.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._@-".contains(&b))
+        {
+            v.to_string()
+        } else {
+            String::new()
+        }
+    };
     // MAC= is destination(6):source(6):type(2) bytes.
     let mac = field(line, "MAC")
         .map(|m| {
             let parts: Vec<&str> = m.split(':').collect();
-            if parts.len() >= 12 {
+            let hex = |p: &&str| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit());
+            if parts.len() >= 12 && parts[6..12].iter().all(hex) {
                 parts[6..12].join(":")
             } else {
                 String::new()
@@ -752,8 +773,8 @@ pub fn parse_log_line(line: &str) -> Option<LogEntry> {
         address,
         mac,
         port: field(line, "DPT").and_then(|p| p.parse().ok()),
-        proto: field(line, "PROTO").unwrap_or("").to_string(),
-        interface: if inn.is_empty() { out } else { inn }.to_string(),
+        proto: word(field(line, "PROTO").unwrap_or(""), 12),
+        interface: word(if inn.is_empty() { out } else { inn }, 15),
     })
 }
 
@@ -775,6 +796,10 @@ pub struct LogState {
 
 /// Read recent UFW entries as the current user (works for members of the
 /// adm / systemd-journal groups).
+///
+/// Only the kernel's own messages in the journal (`_TRANSPORT=kernel`) are used: they can't be
+/// faked by other programs. `/var/log/ufw.log` (rsyslog) is not read, because it collects
+/// messages by their text and any program can write a fake "[UFW BLOCK]" line into it.
 pub fn read_log() -> LogState {
     #[cfg(debug_assertions)]
     if let Ok(f) = std::env::var("PROTON_SECURITY_FAKE_UFW_LOG") {
@@ -806,15 +831,6 @@ pub fn read_log() -> LogState {
                 needs_admin: false,
             };
         }
-    }
-    // Systems that log to a file (rsyslog).
-    if let Some(t) = sys::read("/var/log/ufw.log") {
-        let lines: Vec<&str> = t.lines().collect();
-        let tail = lines[lines.len().saturating_sub(300)..].join("\n");
-        return LogState {
-            entries: parse_log(&tail),
-            needs_admin: false,
-        };
     }
     LogState {
         entries: vec![],
@@ -857,5 +873,23 @@ mod tests {
         assert_eq!(e.direction, "Outgoing");
         assert_eq!(e.address, "203.0.113.9");
         assert_eq!(e.port, Some(443));
+    }
+
+    #[test]
+    fn odd_log_fields_are_dropped() {
+        let l = "2026-10-27T14:03:11-04:00 proton kernel: [UFW BLOCK] IN=<b>eth0</b> OUT= MAC=zz:00 SRC=not-an-ip DST=10.0.0.1 PROTO=UDP\u{202e}x DPT=99999";
+        let e = parse_log_line(l).unwrap();
+        assert_eq!(e.address, "");
+        assert_eq!(e.interface, "");
+        assert_eq!(e.mac, "");
+        assert_eq!(e.proto, "");
+        assert_eq!(e.port, None);
+    }
+
+    #[test]
+    fn non_hex_addresses_are_refused() {
+        // 32 bytes, but with a multi-byte character: must not panic.
+        assert!(parse_hex_addr("0000000000000000FFFF0000é100007F:0050").is_none());
+        assert!(parse_hex_addr("0100007G:0050").is_none());
     }
 }

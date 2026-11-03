@@ -308,7 +308,9 @@ impl App {
             let kind = job.kind;
             if p.phase == Phase::Done {
                 if let Some(r) = &p.result {
-                    let msg = if r.cancelled {
+                    let msg = if let Some(why) = &r.problem {
+                        (false, format!("{} could not run. {why}", r.kind))
+                    } else if r.cancelled {
                         (
                             false,
                             format!("{} was cancelled after {} files.", r.kind, r.files),

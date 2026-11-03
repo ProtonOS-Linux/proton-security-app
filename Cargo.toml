@@ -1,6 +1,6 @@
 [package]
 name = "proton-security"
-version = "0.4.9"
+version = "0.4.10"
 edition = "2024"
 rust-version = "1.95"
 description = "Windows Security style security center for Proton OS"
@@ -19,6 +19,7 @@ eframe = "0.37.0"
 egui = "0.37"
 egui_extras = { version = "0.37.0", features = ["svg", "image"] }
 flate2 = "1.1.10"
+libc = "0.2.191"
 ksni = { version = "0.3.7", default-features = false, features = ["blocking", "async-io"] }
 resvg = "0.45.1"
 serde = { version = "1.0.229", features = ["derive"] }

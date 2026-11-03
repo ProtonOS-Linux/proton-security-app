@@ -185,6 +185,7 @@ Read only: `/etc/proton-security/policy.conf` (the [company policy](POLICY.md)).
 | `resvg` | Rendering the tray icon's SVG to pixels |
 | `serde`, `serde_json` | Settings, history, Snapper and busctl JSON |
 | `chrono` | Dates in logs, history and the report |
+| `libc` | Open flags (`O_NOFOLLOW`) for scanning files safely |
 | `walkdir` | Walking folders (scans, Downloads, USB drives) |
 | `flate2` | Reading rotated (gzip) apt history logs |
 

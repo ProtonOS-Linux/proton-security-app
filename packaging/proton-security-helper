@@ -103,9 +103,14 @@ module_package() {
 }
 
 module_firmware_packages() {
-    # Packages that ship the firmware files this module asks for (may be none).
+    # Packages that ship the firmware files this module asks for (may be none). The names come
+    # from the module file (root-owned), but are still checked: plain relative paths only (no
+    # "..", no spaces or wildcards), one per line, so nothing outside the firmware folders is
+    # looked at.
     local fw base f
-    for fw in $(modinfo -F firmware "$1" 2>/dev/null || true); do
+    while IFS= read -r fw; do
+        [[ "$fw" =~ ^[A-Za-z0-9._+/-]{1,200}$ ]] || continue
+        case "/$fw/" in */../*|*/./*|//*) continue ;; esac
         for base in /lib/firmware /usr/lib/firmware; do
             for f in "$base/$fw" "$base/$fw.xz" "$base/$fw.zst"; do
                 if [ -e "$f" ]; then
@@ -113,7 +118,7 @@ module_firmware_packages() {
                 fi
             done
         done
-    done | { grep -v '^$' || true; } | sort -u
+    done < <(modinfo -F firmware "$1" 2>/dev/null || true) | { grep -v '^$' || true; } | sort -u
 }
 
 unload_module() {
@@ -607,8 +612,9 @@ fw-rules)
 
 fw-log)
     # Recent firewall log lines, for accounts that can't read the system log.
-    journalctl -q --no-pager -o short-iso _TRANSPORT=kernel -g '\[UFW ' -n 300 2>/dev/null \
-        || tail -n 300 /var/log/ufw.log 2>/dev/null || true
+    # Only the kernel's own messages (_TRANSPORT=kernel): /var/log/ufw.log is filled by matching
+    # message text, so any program could add fake "[UFW BLOCK]" lines to it.
+    journalctl -q --no-pager -o short-iso _TRANSPORT=kernel -g '\[UFW ' -n 300 2>/dev/null || true
     ;;
 
 # Update a driver: upgrade the package that ships it (the kernel, for built-in drivers)
@@ -617,40 +623,38 @@ driver-update)
     valid_module "$arg"
     file=$(module_file "$arg")
     pkg=$(module_package "$arg")
-    fwpkgs=$(module_firmware_packages "$arg")
     say "Driver: $arg"
     say "Driver file: ${file:-built into the kernel}"
     say "Provided by package: ${pkg:-(not found)}"
     say "Refreshing package lists"
     apt-get update -q || say "Some package sources could not be refreshed; continuing with the cached lists."
-    targets=""
+    # Package names to upgrade, as an array (each name one word; names come from dpkg and
+    # modinfo, never from the user, and Debian names have no spaces or wildcards anyway).
+    targets=()
     case "$pkg" in
         linux-image-*|"")
             # Drivers that come with the kernel are updated by installing the newest kernel.
             for meta in linux-image-amd64 linux-image-arm64 linux-image-686-pae linux-image-rt-amd64 linux-image-cloud-amd64; do
-                if dpkg -s "$meta" >/dev/null 2>&1; then targets="$targets $meta"; fi
+                if dpkg -s "$meta" >/dev/null 2>&1; then targets+=("$meta"); fi
             done
             say "This driver is part of the Linux kernel, so it is updated with the kernel." ;;
-        *) targets="$targets $pkg" ;;
+        *) targets+=("$pkg") ;;
     esac
-    targets="$targets $fwpkgs"
-    # Every installed firmware package (firmware for this hardware may live in any of them).
-    targets="$targets $(dpkg-query -W -f='${db:Status-Status} ${binary:Package}\n' 'firmware-*' 2>/dev/null | awk '$1=="installed"{print $2}' | tr '\n' ' ' || true)"
-    # $targets is a space-separated list of package names (all from dpkg/modinfo, never
-    # from the user): it is split into words on purpose below.
-    # shellcheck disable=SC2086
-    targets=$(echo $targets | tr ' ' '\n' | { grep -v '^$' || true; } | sort -u | tr '\n' ' ')
-    if [ -z "${targets// }" ]; then
+    while IFS= read -r p; do
+        [ -n "$p" ] && targets+=("$p")
+    done < <(module_firmware_packages "$arg"
+             # Every installed firmware package (firmware for this hardware may live in any of them).
+             dpkg-query -W -f='${db:Status-Status} ${binary:Package}\n' 'firmware-*' 2>/dev/null | awk '$1=="installed"{print $2}' || true)
+    # Keep only valid package names, each once.
+    mapfile -t targets < <(printf '%s\n' "${targets[@]}" | grep -E '^[a-z0-9][a-z0-9+.:-]*$' | sort -u || true)
+    if [ "${#targets[@]}" -eq 0 ]; then
         say "Nothing to update for this driver."
         exit 0
     fi
-    say "Checking for newer versions of: $targets"
-    # shellcheck disable=SC2086
-    before=$(dpkg-query -W -f='${binary:Package}=${Version}\n' $targets 2>/dev/null | sort || true)
-    # shellcheck disable=SC2086
-    apt-get install -y -q --only-upgrade -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold $targets
-    # shellcheck disable=SC2086
-    after=$(dpkg-query -W -f='${binary:Package}=${Version}\n' $targets 2>/dev/null | sort || true)
+    say "Checking for newer versions of: ${targets[*]}"
+    before=$(dpkg-query -W -f='${binary:Package}=${Version}\n' "${targets[@]}" 2>/dev/null | sort || true)
+    apt-get install -y -q --only-upgrade -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "${targets[@]}"
+    after=$(dpkg-query -W -f='${binary:Package}=${Version}\n' "${targets[@]}" 2>/dev/null | sort || true)
     if [ "$before" = "$after" ]; then
         say "The driver is already up to date."
     else

@@ -54,15 +54,15 @@ installed tools:
 | Module | Tests |
 |---|---|
 | `restore.rs` | Snapper JSON, systemd calendar expressions in words, cron days, which scripts create snapshots |
-| `firewall.rs` | `/proc/net` hex addresses (IPv4/IPv6), UFW kernel log lines |
+| `firewall.rs` | `/proc/net` hex addresses (IPv4/IPv6, non-hex refused), UFW kernel log lines, odd log fields dropped |
 | `health.rs` | Kernel version comparison, `udisksctl dump` parsing, NVMe media errors |
-| `account.rs` | KDE ini read/write round trip, PowerDevil inhibitions (busctl and gdbus formats) |
+| `account.rs` | KDE ini read/write round trip, line breaks refused, symlinked configs kept, PowerDevil inhibitions (busctl and gdbus formats, escaped quotes), user name from the real user ID |
 | `antivirus.rs` | History keeps 30 days and scans with open threats; scan result parsing only accepts absolute plain paths; unusual file names; Quarantine/Delete refuse incomplete paths; **end-to-end replay of the crafted-file-name attack** against ClamAV (skipped when ClamAV isn't installed) |
-| `admin.rs` | The protected command list matches the helper script; commands go to the right entry point |
+| `admin.rs` | The protected command list matches the helper script; commands go to the right entry point; recovery keys never reach the log |
 | `watchers.rs` | `/proc/mounts` parsing (escaped spaces), USB quick-scan file selection (risky first, programs disguised as photos), saved path encoding, recent-files expiry |
 | `risk.rs` | Risky names and content, suspicious startup lines (and ordinary ones that must stay quiet), stable line hash |
 | `startup.rs` | New sign-in program and suspicious `.bashrc` line reported; installer lines, scripts and switched-off programs stay quiet; the saved baseline survives a restart; `.desktop`/unit parsing |
-| `appperms.rs` | Flatpak permissions plus user overrides |
+| `appperms.rs` | Flatpak permissions plus override layers (system, user), app ID checks |
 | `policy.rs` | Policy file parsing |
 | `tray.rs` | Tray icons render; notification text is escaped |
 | `checks.rs` | The change fingerprint is stable and cheap |

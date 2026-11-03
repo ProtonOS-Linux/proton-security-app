@@ -4,6 +4,34 @@ All notable changes to Proton Security are listed here, newest first.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.10] - 2026-11-03
+
+Hardening and resource fixes from second-opinion reviews of the code. None of the findings was an exploitable
+vulnerability.
+
+### Security
+- The signed-in user is taken from the real user ID, not the `$USER` variable (any program can change it).
+- Files scanned one by one (unusual names) are opened without following a link and checked after opening, so a
+  file swapped for a link, a pipe or a device in between is refused.
+- Recovery keys are hidden from the task window on the helper's error output too, not only its normal output.
+- The privileged helper only accepts plain firmware names from driver information, and keeps package lists as
+  arrays instead of space-separated text.
+- The firewall log is read only from the kernel's own messages in the system journal. `/var/log/ufw.log` is no
+  longer used: any program could add fake "blocked" lines to it. Log fields are shown only when they are real
+  addresses, ports and interface names.
+- Saving the screen-lock settings refuses line breaks and writes through a temporary file, so a crash can't leave
+  the file cut short (a settings file that is a link to elsewhere stays a link).
+
+### Changed
+- **App permissions** reads Flatpak's permission files directly: one `flatpak` command for the whole list
+  instead of two per app. It now also includes system-wide and "all apps" overrides, as Flatpak applies them.
+- The tray's 5-second account check no longer starts `passwd` each time; it asks again only when the password
+  file changes.
+
+### Fixed
+- A scan that ClamAV couldn't run at all (for example, no virus definitions) no longer reports "No threats found
+  in 0 files" and no longer counts as a recent scan. It says what went wrong.
+
 ## [0.4.9] - 2026-11-01
 
 ### Added
@@ -254,6 +282,7 @@ First version: Security at a glance with five checks (antivirus, security update
 system restore), a ClamAV front end with quick / full / custom scans, a Snapper restore point list and a device
 manager.
 
+[0.4.10]: https://github.com/ProtonOS-Linux/proton-security-app/releases/tag/v0.4.10
 [0.4.9]: https://github.com/ProtonOS-Linux/proton-security-app/releases/tag/v0.4.9
 [0.4.8]: https://github.com/ProtonOS-Linux/proton-security-app/releases/tag/v0.4.8
 [0.4.7]: https://github.com/ProtonOS-Linux/proton-security-app/releases/tag/v0.4.7
