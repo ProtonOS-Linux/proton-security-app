@@ -86,7 +86,7 @@ jobs:
         run: |
           dpkg-deb --info target/debian/*.deb
           dpkg-deb --contents target/debian/*.deb
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: proton-security-deb
           path: target/debian/*.deb
