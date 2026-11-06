@@ -1092,7 +1092,8 @@ mod tests {
         let d = std::env::temp_dir().join(format!("ps-usb-{}", std::process::id()));
         std::fs::create_dir_all(d.join("sub")).unwrap();
         std::fs::write(d.join("setup.exe"), b"MZ").unwrap();
-        std::fs::write(d.join("sub/report.docx"), b"PK").unwrap();
+        // A real Office document starts like a zip file, so it counts as risky by content.
+        std::fs::write(d.join("sub/report.docx"), b"PK\x03\x04").unwrap();
         std::fs::write(d.join("photo.JPG"), b"x").unwrap();
         std::fs::write(d.join("notes.txt"), b"hello").unwrap();
         // A program pretending to be a photo is found by its content.
