@@ -167,6 +167,8 @@ pub fn cmp_version(a: &str, b: &str) -> Ordering {
 /// - more than [`RESTART_AFTER_DAYS`] days since the last restart.
 pub fn restart() -> Restart {
     let mut r = Restart::default();
+    // Debian's update tools create this file when an update needs a restart, and list the
+    // packages that asked for it in reboot-required.pkgs.
     if Path::new("/var/run/reboot-required").exists() || Path::new("/run/reboot-required").exists()
     {
         r.required = true;
@@ -204,6 +206,8 @@ pub fn restart() -> Restart {
             "A new Linux kernel ({n}) is installed. You are running {running}."
         ));
     }
+    // A long time without a restart: updates to running programs and the kernel only take effect
+    // after one.
     let days = uptime_secs() / 86400;
     if days >= RESTART_AFTER_DAYS {
         r.required = true;
@@ -322,6 +326,10 @@ pub fn parse_udisks_dump(text: &str) -> Vec<DriveHealth> {
     let mut drives: Vec<DriveHealth> = vec![];
     let mut in_drive_obj = false;
     let mut iface = String::new();
+    // `udisksctl dump` prints objects at column 0 ("/org/freedesktop/UDisks2/drives/X:"), their
+    // interfaces indented by 2 ("  org.freedesktop.UDisks2.Drive.Ata:") and properties by 4
+    // ("Key: value"). Only drive objects are read; the current interface decides what a
+    // property means.
     for line in text.lines() {
         if !line.starts_with(' ') && line.ends_with(':') {
             in_drive_obj = line.starts_with("/org/freedesktop/UDisks2/drives/");
@@ -346,6 +354,8 @@ pub fn parse_udisks_dump(text: &str) -> Vec<DriveHealth> {
             continue;
         };
         let (k, v) = (k.trim(), v.trim());
+        // SATA drives report SMART through the Drive.Ata interface, NVMe drives through
+        // NVMe.Controller. Temperatures are in kelvin.
         let d = drives.last_mut().unwrap();
         match (iface.as_str(), k) {
             ("org.freedesktop.UDisks2.Drive", "Model") => d.model = v.to_string(),

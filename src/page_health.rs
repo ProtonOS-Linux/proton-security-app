@@ -14,6 +14,8 @@ use egui::RichText;
 impl App {
     /// Draw the Device performance & health page.
     pub fn page_health(&mut self, ui: &mut egui::Ui) {
+        // Sections: "Restart" (why one is recommended), "Storage" (free space, clean-up), "Disk
+        // health" (SMART data per drive), "Battery" (wear), "Memory".
         let ctx = ui.ctx().clone();
         if self.health.stale(std::time::Duration::from_secs(60)) {
             self.health.refresh(&ctx, crate::health::load);

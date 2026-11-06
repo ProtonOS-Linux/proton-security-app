@@ -59,6 +59,8 @@ pub fn valid_description(s: &str) -> bool {
 impl App {
     /// Draw the Restore & backup page.
     pub fn page_restore(&mut self, ui: &mut egui::Ui) {
+        // Layout: the file backup card first (see `page_apps.rs`), then "System restore points"
+        // (status, schedule, the list of restore points and "Create restore point").
         let ctx = ui.ctx().clone();
         if self.restore.last.is_none() {
             self.refresh_restore(&ctx);
@@ -310,6 +312,8 @@ impl App {
 
     /// The "Create restore point" dialog (description, then the helper makes the snapshot).
     pub fn create_restore_dialog(&mut self, ctx: &egui::Context) {
+        // Asks for a description; the helper only accepts letters, digits, spaces and simple
+        // punctuation, 80 characters at most, so the same rule is shown here.
         let Some(mut desc) = self.create_dialog.take() else {
             return;
         };

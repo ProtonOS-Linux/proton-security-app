@@ -206,6 +206,9 @@ fn tile(
     (id, fallback_title): (CheckId, &str),
     st: TileStyle,
 ) -> Option<Action> {
+    // A tile is painted by hand (not a stack of widgets) so all nine have the same size and fit
+    // a 1366×768 screen without scrolling: card background, icon with a green/yellow badge,
+    // title, headline, detail lines, then up to two buttons at the bottom.
     let painter = ui.painter();
     painter.rect(
         rect,

@@ -35,6 +35,9 @@ pub fn open_kcm(module: &str) -> bool {
 impl App {
     /// Draw the Account protection page.
     pub fn page_account(&mut self, ui: &mut egui::Ui) {
+        // Layout, top to bottom: page title and status line; "Screen lock" (settings and the fix
+        // button, the battery menu's screen locking switch); "Sign-in" (password, automatic
+        // sign-in); "Administrators" (information only). Data loads in the background (`Bg`).
         let ctx = ui.ctx().clone();
         if self.account.stale(std::time::Duration::from_secs(20)) {
             self.account.refresh(&ctx, crate::account::load);
@@ -219,6 +222,9 @@ impl App {
 
     /// Draw the Device security page.
     pub fn page_devsec(&mut self, ui: &mut egui::Ui) {
+        // Layout: "Secure Boot", "Security chip (TPM)", then "Disk encryption" with the tools for an
+        // encrypted drive (recovery key, change password, header backup). Information only, except
+        // those tools; each asks for the administrator password (protected helper commands).
         let ctx = ui.ctx().clone();
         if self.devsec.last.is_none() {
             self.devsec.refresh(&ctx, crate::devsec::load);
@@ -458,6 +464,8 @@ impl App {
     /// to the helper on its standard input, never on the command line, so other users can't see
     /// them in the process list.
     pub fn luks_dialogs(&mut self, ctx: &egui::Context) {
+        // The disk-encryption windows: entering passwords (they go to the helper on standard input,
+        // never on a command line), then showing a new recovery key once in its own window.
         // ---- enter passwords
         if let Some(dlg) = &mut self.luks_dialog {
             let (mut submit, mut cancel) = (false, false);

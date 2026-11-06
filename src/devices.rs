@@ -13,26 +13,47 @@ use std::sync::OnceLock;
 /// Device groups, named and ordered like Windows Device Manager.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum Category {
-    Other, // shown first, like Windows' "Other devices"
+    /// "Other devices". Shown first, like Windows' "Other devices": devices without a driver land here.
+    Other,
+    /// "Sound, video and game controllers".
     Audio,
+    /// "Batteries".
     Batteries,
+    /// "Bluetooth".
     Bluetooth,
+    /// "Cameras".
     Cameras,
+    /// "Disk drives".
     Disks,
+    /// "DVD/CD-ROM drives".
     Optical,
+    /// "Display adapters".
     Display,
+    /// "Human Interface Devices".
     Hid,
+    /// "Imaging devices".
     Imaging,
+    /// "Keyboards".
     Keyboards,
+    /// "Mice and other pointing devices".
     Mice,
+    /// "Monitors".
     Monitors,
+    /// "Network adapters".
     Network,
+    /// "Ports (COM & serial)".
     Ports,
+    /// "Print queues & printers".
     Printers,
+    /// "Processors".
     Processors,
+    /// "Storage controllers".
     Storage,
+    /// "System devices".
     System,
+    /// "Universal Serial Bus controllers".
     UsbControllers,
+    /// "Universal Serial Bus devices".
     UsbDevices,
 }
 
@@ -363,6 +384,8 @@ fn scan_pci(out: &mut Vec<Device>, nets: &HashMap<PathBuf, Vec<String>>) {
     for e in dir.flatten() {
         let p = e.path();
         let slot = e.file_name().to_string_lossy().into_owned();
+        // Each folder is one PCI device. Its class (what kind of device), vendor and device IDs are
+        // hex numbers in small files; a device missing any of them is skipped.
         let (Some(class), Some(ven), Some(dev)) = (
             hex(p.join("class")),
             hex(p.join("vendor")),
@@ -371,6 +394,8 @@ fn scan_pci(out: &mut Vec<Device>, nets: &HashMap<PathBuf, Vec<String>>) {
             continue;
         };
         let (ven, dev) = (ven as u16, dev as u16);
+        // Names come from the pci.ids database (the "pci.ids" package); unknown IDs are shown as
+        // numbers so the device still appears.
         let db = pci_db();
         let vendor = db
             .vendors
@@ -382,10 +407,13 @@ fn scan_pci(out: &mut Vec<Device>, nets: &HashMap<PathBuf, Vec<String>>) {
             .get(&(ven, dev))
             .cloned()
             .unwrap_or_else(|| format!("{} ({ven:04x}:{dev:04x})", pci_class_name(class)));
+        // The driver is the folder `driver` links to. With none, `status_for` looks up which kernel
+        // modules would match the device's modalias, to tell "driver not loaded" from "no driver".
         let driver = link_name(p.join("driver"));
         let modalias = rd(p.join("modalias"));
         let (status, mods) = status_for(&driver, &modalias, !pci_needs_driver(class));
 
+        // Properties shown in the device's Properties window.
         let mut props = vec![
             ("Device type".into(), pci_class_name(class).into()),
             ("Location".into(), format!("PCI slot {slot}")),
@@ -405,6 +433,7 @@ fn scan_pci(out: &mut Vec<Device>, nets: &HashMap<PathBuf, Vec<String>>) {
             props.push(("Subsystem".into(), format!("{sv:04x}:{sd:04x}")));
         }
 
+        // Like Windows, a device with a driver problem is listed under "Other devices".
         let category = if status.is_problem() {
             Category::Other
         } else {
@@ -433,6 +462,9 @@ fn scan_pci(out: &mut Vec<Device>, nets: &HashMap<PathBuf, Vec<String>>) {
 /// Device manager group for a USB interface class.
 fn usb_iface_category(class: u32, sub: u32, driver: Option<&str>) -> Category {
     match class {
+        // USB interface class codes (usb.org "Defined Class Codes"): 01 audio, 02 communications
+        // (sub-class 02 = modem/serial), 0a data, 03 HID (keyboards, mice), 06 still imaging,
+        // 07 printer, 08 mass storage, 09 hub, 0e video, e0 wireless (Bluetooth).
         0x01 => Category::Audio,
         0x02 if sub == 0x02 => Category::Ports,
         0x02 | 0x0a => Category::Network,
@@ -444,6 +476,8 @@ fn usb_iface_category(class: u32, sub: u32, driver: Option<&str>) -> Category {
         0x0e => Category::Cameras,
         0xe0 => Category::Bluetooth,
         _ => {
+            // Vendor-specific class (ff) and others: guess from the driver's name instead (Wi-Fi and
+            // network adapters, Bluetooth, webcams, USB-serial adapters).
             let d = driver.unwrap_or("");
             if [
                 "rtl8",
@@ -497,6 +531,7 @@ fn scan_usb(out: &mut Vec<Device>, nets: &HashMap<PathBuf, Vec<String>>) {
             continue; // interface, handled with its device
         }
         let p = e.path();
+        // A real device has vendor and product IDs; other entries are skipped.
         let (Some(ven), Some(prod)) = (hex(p.join("idVendor")), hex(p.join("idProduct"))) else {
             continue;
         };
@@ -545,6 +580,8 @@ fn scan_usb(out: &mut Vec<Device>, nets: &HashMap<PathBuf, Vec<String>>) {
             ));
         }
 
+        // Hubs are listed with the USB controllers. A device's driver is the set of drivers bound to
+        // its interfaces (a headset can have an audio and a HID interface).
         let is_hub = dev_class == 0x09 || ifaces.iter().any(|f| f.0 == 0x09);
         let bound: Vec<String> = ifaces
             .iter()
@@ -565,6 +602,8 @@ fn scan_usb(out: &mut Vec<Device>, nets: &HashMap<PathBuf, Vec<String>>) {
                 .unwrap_or(Category::UsbDevices)
         };
         let modalias = main.and_then(|f| f.3.clone());
+        // Status: OK with a driver; "driver not loaded" when kernel modules exist for one of its
+        // interfaces (offered by "Load driver"); otherwise "no driver".
         let (status, mods) = if is_hub {
             (Status::Ok, vec![])
         } else {
@@ -589,6 +628,7 @@ fn scan_usb(out: &mut Vec<Device>, nets: &HashMap<PathBuf, Vec<String>>) {
             }
         };
 
+        // The device's own name strings first, then the usb.ids database, then the IDs.
         let db = usb_db();
         let vendor = rd(p.join("manufacturer"))
             .or_else(|| db.vendors.get(&ven).cloned())
@@ -603,6 +643,7 @@ fn scan_usb(out: &mut Vec<Device>, nets: &HashMap<PathBuf, Vec<String>>) {
                 }
             });
 
+        // Properties: port, speed, network interface names (Wi-Fi/Ethernet adapters), interfaces.
         let mut props = vec![("Location".into(), format!("USB port {name_s}"))];
         if let Some(s) = speed {
             props.push(("Speed".into(), format!("{s} Mbit/s")));
@@ -717,6 +758,8 @@ fn scan_block(out: &mut Vec<Device>) {
     };
     for e in dir.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
+        // Only physical drives: skip virtual ones (loop images, RAM disks, encrypted/LVM and RAID
+        // mappings, network block devices).
         if ["loop", "ram", "zram", "dm-", "md", "nbd"]
             .iter()
             .any(|p| n.starts_with(p))
@@ -730,6 +773,7 @@ fn scan_block(out: &mut Vec<Device>) {
             .filter(|v| !v.starts_with("0x"))
             .unwrap_or_default();
         let sectors: u64 = rd(p.join("size")).and_then(|s| s.parse().ok()).unwrap_or(0);
+        // Empty card readers report size 0; optical drives are kept even without a disc.
         if sectors == 0 && !n.starts_with("sr") {
             continue;
         }
@@ -740,6 +784,7 @@ fn scan_block(out: &mut Vec<Device>) {
         } else {
             Category::Disks
         };
+        // A plain-words type from the kernel's device name and the "rotational" flag.
         let kind = if n.starts_with("nvme") {
             "NVMe SSD"
         } else if n.starts_with("mmcblk") {
@@ -763,6 +808,7 @@ fn scan_block(out: &mut Vec<Device>) {
         if let Some(s) = rd(p.join("device/serial")) {
             props.push(("Serial".into(), s));
         }
+        // The driver sits on the device or, for some buses (USB, SCSI), one level up.
         let driver = link_name(p.join("device/driver"))
             .or_else(|| link_name(p.join("device/device/driver")));
         out.push(simple(
@@ -780,6 +826,8 @@ fn scan_block(out: &mut Vec<Device>) {
 /// Keyboards, mice, touchpads and other input devices from /proc/bus/input/devices.
 fn scan_input(out: &mut Vec<Device>) {
     let text = sys::read("/proc/bus/input/devices").unwrap_or_default();
+    // /proc/bus/input/devices lists one input device per paragraph: N: name, H: handlers
+    // (mouse0, kbd, event3…), S: its sysfs path, P: physical path.
     for block in text.split("\n\n") {
         let mut name = String::new();
         let mut handlers = String::new();
@@ -800,6 +848,9 @@ fn scan_input(out: &mut Vec<Device>) {
             continue;
         }
         let lname = name.to_lowercase();
+        // Only keyboards and pointing devices are listed here; other input devices (power button,
+        // lid switch, webcam button…) are skipped. A "kbd" handler alone isn't enough: many devices
+        // with media keys have one, so the name must also say keyboard.
         let category = if handlers.split_whitespace().any(|h| h.starts_with("mouse")) {
             Category::Mice
         } else if handlers.contains("kbd") && lname.contains("keyboard") {
@@ -908,6 +959,8 @@ fn scan_power(out: &mut Vec<Device>) {
         if scope == "Device" {
             continue; // e.g. wireless mouse batteries
         }
+        // Batteries: charge, state and health (current full capacity against design capacity, in
+        // energy or charge units depending on the laptop). Mains: the AC adapter. Others skipped.
         let (name, props) = match kind.as_str() {
             "Battery" => {
                 let mut props = vec![];
@@ -1177,6 +1230,9 @@ pub struct DriverInfo {
 
 /// Look up a driver with `modinfo`, `dpkg -S` and /sys/module (all as the normal user).
 pub fn driver_info(module: &str) -> DriverInfo {
+    // Where the driver comes from: its file (or "(builtin)" when it is part of the kernel
+    // itself), the Debian package that ships the file and its version, whether it is loaded,
+    // and how many other modules or devices use it.
     let file = sys::run_full("modinfo", &["-n", module])
         .filter(|r| r.0)
         .map(|r| r.1.trim().to_string())

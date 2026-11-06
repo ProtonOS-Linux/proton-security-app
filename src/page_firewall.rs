@@ -45,6 +45,10 @@ fn now() -> i64 {
 impl App {
     /// Draw the Firewall & network page.
     pub fn page_firewall(&mut self, ui: &mut egui::Ui) {
+        // Layout: title and firewall status (with "Turn on"), the rule buttons ("Add a rule…",
+        // "Rules you added", "Show all firewall rules"), the "Connections" table (programs using
+        // the network, with Allow/Block), then the "Firewall log". This page fills the window
+        // height itself: the table scrolls, the rest stays in place.
         let ctx = ui.ctx().clone();
         if self.fw_status.stale(Duration::from_secs(10)) {
             self.fw_status.refresh(&ctx, firewall::status);
@@ -450,6 +454,7 @@ impl App {
 
     /// Window listing the rules added from this app, each with a Remove button.
     pub fn fw_rules_window(&mut self, ctx: &egui::Context) {
+        // Lists the rules Proton Security added (kept in settings), each with "Remove".
         if !self.fw_rules_dialog {
             return;
         }
@@ -608,6 +613,8 @@ impl App {
     /// The "Add a rule" window: choose allow / block port or block address, then confirm (the
     /// change goes through the helper and asks for the password).
     pub fn fw_add_rule_window(&mut self, ctx: &egui::Context) {
+        // The "Add a firewall rule" form. `AddRuleForm::rule` checks what was typed (port 1–65535,
+        // a real IP address) before the helper is asked to do anything.
         let Some(form) = &mut self.fw_add else { return };
         let (mut submit, mut cancel) = (false, false);
         egui::Modal::new(egui::Id::unique("fw_add_rule"))

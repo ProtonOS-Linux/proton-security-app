@@ -125,7 +125,9 @@ pub fn port_text(port: u16) -> String {
 /// Network protocol of a connection or rule.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Proto {
+    /// TCP: connections (web pages, email, SSH…).
     Tcp,
+    /// UDP: single messages (name lookups, calls, games, streaming…).
     Udp,
 }
 
@@ -499,6 +501,7 @@ type MergeKey = (String, Proto, ConnState, IpAddr, u16, IpAddr, u16);
 /// look into other accounts' processes, so those rows say "System service" (for
 /// root and system accounts) or "Program of `<user>`" instead of a name.
 pub fn connections() -> Vec<Conn> {
+    // Every TCP and UDP socket from /proc/net (IPv4 and IPv6), readable by every user.
     let mut raw = vec![];
     for (f, p) in [
         ("tcp", Proto::Tcp),
@@ -508,6 +511,9 @@ pub fn connections() -> Vec<Conn> {
     ] {
         raw.extend(read_proc_net(f, p));
     }
+    // Which program owns each socket (only visible for this user's own programs), account
+    // names, and the MAC addresses the computer has seen on the local network (the router's is
+    // shown for connections to the internet, since every packet goes through it).
     let owners = socket_owners();
     let users = user_names();
     let (neigh, gw) = neighbors();
@@ -541,6 +547,8 @@ pub fn connections() -> Vec<Conn> {
                 )
             }
         };
+        // The MAC address: none for listening ports; the device's own for local addresses; the
+        // router's for internet addresses.
         let (mac, mac_is_router) = if s.state == ConnState::Listening {
             (None, false)
         } else if let Some(m) = neigh.get(&s.remote.0) {
@@ -601,11 +609,24 @@ pub fn connections() -> Vec<Conn> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RuleKind {
     /// Block all traffic to and from an address.
-    BlockAddress { ip: String },
+    BlockAddress {
+        /// The IPv4 or IPv6 address.
+        ip: String,
+    },
     /// Allow incoming connections to one of this computer's ports.
-    AllowPort { port: u16, proto: Proto },
+    AllowPort {
+        /// Port number (1–65535).
+        port: u16,
+        /// TCP or UDP.
+        proto: Proto,
+    },
     /// Block incoming connections to one of this computer's ports.
-    BlockPort { port: u16, proto: Proto },
+    BlockPort {
+        /// Port number (1–65535).
+        port: u16,
+        /// TCP or UDP.
+        proto: Proto,
+    },
 }
 
 /// A firewall rule added from the Firewall page. Saved in the user's settings, because UFW's

@@ -66,6 +66,8 @@ const MAX_TEXT: u64 = 256 * 1024;
 /// Every startup place for a home folder (`config` is `$XDG_CONFIG_HOME`, normally
 /// `~/.config`).
 fn places(home: &Path, config: &Path) -> Vec<Place> {
+    // Folders first (with how deep to look), then the shell startup files one by one (depth 0 =
+    // the file itself). See the module comment for why each place matters.
     let mut v = vec![
         Place {
             path: config.join("autostart"),
@@ -209,6 +211,8 @@ impl Change {
     /// Notification title and text, when it is worth telling the user about. `threat` is the
     /// virus name if ClamAV found one.
     pub fn message(&self, threat: Option<&str>) -> Option<(String, String)> {
+        // Priority: a threat ClamAV found, then a suspicious line, then (only for the places where
+        // any change is worth a look) a plain "was added / was changed" message.
         let name = &self.name;
         let runs = self
             .runs

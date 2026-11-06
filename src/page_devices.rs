@@ -335,6 +335,9 @@ impl App {
 
     /// Properties panel of the selected device, with its driver details and actions.
     fn device_props(&mut self, ui: &mut egui::Ui, d: &Device) {
+        // The Properties window of a device, like Windows: "General" (name, manufacturer, location,
+        // state), "Driver" (driver in use or available, its file, version and package) with the
+        // driver buttons (update, reinstall, uninstall/enable, load), then all other properties.
         self.purge_plan_ready();
         let ctx = ui.ctx().clone();
         ui.label(RichText::new(&d.name).size(17.0).strong());

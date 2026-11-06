@@ -109,6 +109,8 @@ fn parse_forced(v: &str) -> Forced {
 /// Parse the policy text. Unknown keys and bad values are ignored, so a typo never breaks the
 /// app; the setting simply keeps its default.
 pub fn parse(text: &str) -> Policy {
+    // `key = value` lines; `#` starts a comment; keys are not case-sensitive; quotes around a
+    // value are dropped.
     let mut kv: HashMap<String, String> = HashMap::new();
     for line in text.lines() {
         let l = line.split('#').next().unwrap_or("").trim();
@@ -124,6 +126,8 @@ pub fn parse(text: &str) -> Policy {
         ..Default::default()
     };
     let b = |k: &str, default: bool| kv.get(k).and_then(|v| parse_bool(v)).unwrap_or(default);
+    // Automatic protections: an administrator can force each one on or off (the checkbox is
+    // then greyed out), or leave it to the user.
     if let Some(v) = kv.get("daily_scan") {
         p.daily_scan = parse_forced(v);
     }
@@ -139,6 +143,7 @@ pub fn parse(text: &str) -> Policy {
     if let Some(v) = kv.get("scan_usb") {
         p.scan_usb = parse_forced(v);
     }
+    // Yes/no settings, with their defaults when missing or misspelled.
     p.allow_driver_changes = b("allow_driver_changes", true);
     p.allow_firewall_changes = b("allow_firewall_changes", true);
     p.allow_app_permission_changes = b("allow_app_permission_changes", true);

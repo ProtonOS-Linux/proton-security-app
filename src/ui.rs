@@ -74,28 +74,47 @@ macro_rules! svg {
 /// The line icons used in the side menu, tiles and buttons.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Icon {
+    /// Opens the side menu.
     Menu,
+    /// Security at a glance.
     Home,
+    /// Virus & threat protection.
     Virus,
+    /// Firewall & network protection.
     Firewall,
+    /// Automatic security updates.
     SecurityUpdates,
+    /// Package and Flatpak updates.
     Packages,
+    /// System restore.
     Restore,
+    /// Device manager.
     Chip,
+    /// Check again.
     Refresh,
+    /// Search.
     Search,
+    /// Opens another program or a website.
     External,
+    /// Account protection.
     Account,
+    /// Device security (Secure Boot, TPM, disk encryption).
     Lock,
+    /// Performance & health.
     Pulse,
+    /// App permissions.
     Apps,
+    /// File backup.
     Backup,
+    /// The security report.
     Report,
 }
 
 impl Icon {
     /// SVG source of the icon.
     fn svg(self) -> &'static str {
+        // 24×24 line drawings (outline only, no fill), wrapped by the `svg!` macro in one <svg>
+        // element; drawn white so `image` can tint them with any colour.
         match self {
             Icon::Menu => svg!(r#"<path d="M4 6.5h16M4 12h16M4 17.5h16"/>"#),
             Icon::Home => svg!(

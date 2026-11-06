@@ -14,6 +14,10 @@ use egui::{Color32, RichText};
 impl App {
     /// Draw the App permissions page.
     pub fn page_apps(&mut self, ui: &mut egui::Ui) {
+        // Layout: title, a line explaining permissions, then one card per Flatpak app with broad
+        // access (all files, home folder, devices, network…), each permission a switch. A switch
+        // writes a per-user override (`flatpak override --user`), never the system, and "Reset"
+        // removes this app's overrides.
         let ctx = ui.ctx().clone();
         if self.apps.last.is_none() {
             self.apps.refresh(&ctx, appperms::load);
@@ -154,6 +158,8 @@ impl App {
 
     /// "File backup" card at the top of the Restore & backup page.
     pub fn backup_card(&mut self, ui: &mut egui::Ui) {
+        // The "File backup" card: backup tools found and their last backup, and buttons to set up Kup
+        // or say "I back up another way".
         let ctx = ui.ctx().clone();
         if self.backup.stale(std::time::Duration::from_secs(30)) {
             self.backup.refresh(&ctx, crate::backup::load);

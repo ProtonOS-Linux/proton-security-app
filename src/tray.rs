@@ -156,6 +156,9 @@ impl ksni::Tray for Tray {
         use ksni::menu::*;
         let pol = policy::get();
         let st = settings::load();
+        // The tray menu, rebuilt whenever the status changes: the status line (not clickable),
+        // shortcuts to the pages, the automatic protection switches (greyed out when the company
+        // policy decides them), the security report, and Quit.
         let status = match self.level {
             None => "Checking…".to_string(),
             Some(Level::Ok) => "No action needed".to_string(),
@@ -923,6 +926,8 @@ fn check_usb(mount: &std::path::Path) {
     let label = watchers::drive_label(mount);
     // Let the file manager finish opening the drive first.
     std::thread::sleep(Duration::from_secs(2));
+    // The quick scan's file list (risky files first, see `watchers::usb_files`). The user hears
+    // when it starts, because a big drive can take a minute, and again with the result.
     let (files, truncated) = watchers::usb_files(mount);
     if files.is_empty() {
         notify(
@@ -940,6 +945,7 @@ fn check_usb(mount: &std::path::Path) {
         notify("Could not check the USB drive", why);
         return;
     }
+    // Every USB scan goes into the protection history, threats or not.
     watchers::record_scan(
         "USB drive scan",
         vec![mount.to_string_lossy().into_owned()],

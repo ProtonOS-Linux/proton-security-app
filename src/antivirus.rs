@@ -622,6 +622,7 @@ pub fn private_dir() -> PathBuf {
 pub struct FileList {
     /// Where the list is written.
     pub path: PathBuf,
+    /// The open list file, written one path per line.
     out: std::io::BufWriter<std::fs::File>,
     /// Number of files in the list.
     pub len: u64,

@@ -958,6 +958,8 @@ fn usb_devices() -> HashMap<String, (String, Vec<UsbKind>)> {
         if name.contains(':') || name.starts_with("usb") {
             continue;
         }
+        // A device is identified by port, vendor, product and serial number, so the same stick
+        // plugged into the same port is recognized and only new devices raise an alert.
         let id = format!(
             "{name}:{}:{}:{}",
             sys::read_trim(p.join("idVendor")).unwrap_or_default(),
@@ -971,6 +973,9 @@ fn usb_devices() -> HashMap<String, (String, Vec<UsbKind>)> {
         } else {
             format!("{maker} {product}")
         };
+        // What it can do, from its interfaces: a keyboard (HID class 03, protocol 1 — a "USB
+        // stick" that types is a classic attack), storage (class 08), network (02, 0a, e0, or a
+        // vendor-specific adapter that created a network interface).
         let mut kinds = vec![];
         for (iname, ip) in entries
             .iter()

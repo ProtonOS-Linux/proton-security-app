@@ -302,6 +302,9 @@ impl App {
 
     /// Current threats, or the progress of a running scan, with the Quick scan button.
     fn scan_status(&mut self, ui: &mut egui::Ui) {
+        // Shows one of three things: a running scan (progress, file being scanned, elapsed time,
+        // "Cancel scan"), or the last result with open threats and their buttons (Quarantine,
+        // Delete, Allow), or "No scan has been run yet".
         let ctx = ui.ctx().clone();
         if let Some(job) = &self.scan {
             let p = job.snapshot();

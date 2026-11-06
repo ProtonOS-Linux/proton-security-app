@@ -67,6 +67,9 @@ fn badge(ok: Option<bool>) -> &'static str {
 /// so it can be emailed or printed to PDF from the browser. It runs every check again, so it
 /// takes a few seconds.
 pub fn generate() -> String {
+    // One self-contained HTML page (styles inline, no scripts, nothing loaded from the internet),
+    // readable and printable in any browser. Every value taken from the system (host name,
+    // device and program names, paths) goes through `esc` so it can't add HTML of its own.
     let pol = crate::policy::get();
     let results = checks::run_all();
     let warn = results.iter().filter(|r| r.level == Level::Warn).count();

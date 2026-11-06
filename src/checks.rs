@@ -78,20 +78,36 @@ pub enum Fix {
 pub enum Action {
     /// Run `proton-security-helper <args>` as root.
     Admin {
+        /// Button text ("Turn on").
         label: String,
+        /// Title of the progress window while it runs ("Turning on the firewall").
         title: String,
+        /// Helper command and its arguments (`["enable-firewall"]`).
         args: Vec<String>,
     },
     /// Open one of the app's own pages.
-    Open { label: String, page: crate::Page },
+    Open {
+        /// Button text.
+        label: String,
+        /// The page to open.
+        page: crate::Page,
+    },
     /// Start a quick scan on the antivirus page.
     QuickScan,
     /// A fix that needs no administrator rights.
-    Fix { label: String, fix: Fix },
+    Fix {
+        /// Button text.
+        label: String,
+        /// What to do.
+        fix: Fix,
+    },
     /// Launch an external program.
     Launch {
+        /// Button text.
         label: String,
+        /// The program (a name found in `PATH`, such as `systemsettings`).
         cmd: String,
+        /// Its arguments.
         args: Vec<String>,
     },
 }
@@ -360,6 +376,8 @@ fn security_updates() -> CheckResult {
 /// Tile "Firewall & network protection". Green when UFW is enabled and its service runs, or
 /// firewalld runs.
 fn firewall() -> CheckResult {
+    // What is installed and running. UFW counts as on only when all three agree: installed,
+    // switched on in its config file (readable by everyone), and its service running.
     let ufw_installed = sys::which("ufw").is_some();
     let ufw_conf_on = sys::read("/etc/ufw/ufw.conf")
         .map(|s| {
@@ -372,6 +390,7 @@ fn firewall() -> CheckResult {
     let firewalld = sys::systemctl_active("firewalld.service");
     let nft = sys::systemctl_active("nftables.service");
 
+    // Either supported firewall being on is enough.
     let (ok, name) = if ufw_installed && ufw_conf_on && ufw_service {
         (true, "UFW")
     } else if firewalld {
@@ -380,6 +399,7 @@ fn firewall() -> CheckResult {
         (false, "")
     };
 
+    // Detail lines under the headline: which firewall is on, or why UFW isn't.
     let mut details = vec![];
     if ok {
         details.push(format!("Active firewall: {name}"));
@@ -400,6 +420,7 @@ fn firewall() -> CheckResult {
         }
     }
 
+    // Buttons: "Turn on" only when needed (asks for the password), then a link to the page.
     let mut actions = vec![];
     if !ok {
         actions.push(Action::admin(
@@ -593,6 +614,9 @@ fn flatpak_auto() -> bool {
 /// refreshed in over [`STALE_DAYS`] days, or automatic updates are
 /// off.
 fn updates() -> CheckResult {
+    // Gather what we know: automatic updates (unattended-upgrades must be working AND include
+    // regular updates, not only security ones), when packages were last updated, when the
+    // package lists were last refreshed, how many updates are waiting, and the same for Flatpak.
     let u = unattended_state();
     let apt_auto = u.working() && u.regular_origin;
     let last_upgrade = last_apt_upgrade();
@@ -659,6 +683,8 @@ fn updates() -> CheckResult {
         }
     ));
 
+    // The first problem found becomes the headline; buttons offer to turn on automatic
+    // updates (only when off) and to update now.
     let ok = problems.is_empty();
     let mut actions = vec![];
     if !apt_auto || (has_flatpak && fp_apps > 0 && !fp_auto) {
@@ -699,12 +725,17 @@ const RESTORE_RECENT_DAYS: f64 = 8.0;
 /// restore points are made automatically (a schedule exists, or one was made in the last
 /// [`RESTORE_RECENT_DAYS`] days).
 fn snapper() -> CheckResult {
+    // Green needs every link of the chain: a Btrfs system drive, Snapper installed and set up,
+    // and restore points made automatically (a schedule, or a recent restore point as proof).
     let st = crate::restore::load();
     let schedules = st.effective_schedules();
     let scheduled = !schedules.is_empty();
     let recent = st.has_recent(RESTORE_RECENT_DAYS);
     let ok = st.btrfs() && st.installed && st.configured() && (scheduled || recent);
 
+    // Detail lines: the drive's filesystem, the schedule(s), and the newest restore point.
+    // Without administrator rights the list of restore points may be unreadable; then the
+    // "last restore point" line is left out instead of claiming there is none.
     let mut details = vec![format!(
         "System drive: {}",
         if st.btrfs() {
@@ -732,6 +763,7 @@ fn snapper() -> CheckResult {
         details.push("Snapper: not installed".into());
     }
 
+    // The headline names the first missing link of the chain.
     let headline = if ok {
         "Restore points are being created automatically."
     } else if !st.btrfs() {
@@ -744,6 +776,7 @@ fn snapper() -> CheckResult {
         "Automatic restore points are turned off."
     };
 
+    // "Turn on" only makes sense on Btrfs; other filesystems can't have restore points.
     let mut actions = vec![];
     if !ok && st.btrfs() {
         actions.push(Action::admin(
@@ -779,6 +812,8 @@ pub const DEFS_STALE_DAYS: f64 = 7.0;
 /// automatically and are recent, a scan finished in the last [`SCAN_STALE_DAYS`] days, and no
 /// threat is waiting for a decision.
 fn antivirus_check() -> CheckResult {
+    // ClamAV's state, the scan history, the newest scan that really ran, and threats that are
+    // still waiting for the user to choose quarantine, delete or allow.
     let info = antivirus::clam_info();
     let history = antivirus::load_history();
     let last = antivirus::last_completed_scan(&history).cloned();
@@ -799,6 +834,7 @@ fn antivirus_check() -> CheckResult {
             &["install-clamav"],
         ));
     } else {
+        // Missing dates count as stale: better a yellow tile than a false green.
         let defs_stale = info
             .db_date
             .map(|t| sys::age_days(t) > DEFS_STALE_DAYS)
@@ -826,7 +862,10 @@ fn antivirus_check() -> CheckResult {
             None => "Last scan: never".into(),
         });
 
+        // Green only when all four hold. The headline names the most urgent problem: open threats
+        // first, then updates switched off, old definitions, no scan ever, an old scan.
         ok = info.auto_update() && !defs_stale && !scan_stale && open_threats == 0;
+        // One fix button matching the headline, plus "Quick scan" which always helps.
         headline = if open_threats > 0 {
             format!("{open_threats} threat(s) need your attention.")
         } else if !info.auto_update() {
@@ -879,6 +918,7 @@ fn antivirus_check() -> CheckResult {
 /// automatic sign-in, screen lock, the battery menu's screen locking switch). Being an
 /// administrator is information only and never turns it yellow.
 fn account() -> CheckResult {
+    // The company policy may set a shorter screen lock limit than the default 15 minutes.
     let pol = crate::policy::get();
     let a = crate::account::load();
     let problems = crate::account::problems(&a, pol.max_screen_lock_minutes);
@@ -992,6 +1032,7 @@ fn device_security() -> CheckResult {
 /// Tile "Device performance & health": failing disk, low disk space, restart recommended, worn
 /// battery (most serious first).
 fn health() -> CheckResult {
+    // Problems in order of seriousness; the most serious one becomes the headline.
     let h = crate::health::load();
     let low = h.low_disks();
     let failing = h.failing_drives();
@@ -1007,6 +1048,7 @@ fn health() -> CheckResult {
             sys::fmt_bytes(low[0].free),
             low[0].mount
         )
+    // Buttons for the problems found, then always "Details".
     } else if h.restart.required {
         h.restart.headline()
     } else if let Some(b) = h.worn_battery() {
@@ -1017,6 +1059,7 @@ fn health() -> CheckResult {
     } else {
         "No issues.".into()
     };
+    // Green only with none of the four problems.
     let ok =
         failing.is_empty() && low.is_empty() && !h.restart.required && h.worn_battery().is_none();
     if h.restart.required {
@@ -1035,6 +1078,7 @@ fn health() -> CheckResult {
         label: "Details".into(),
         page: crate::Page::Health,
     });
+    // Detail lines: free space on the system drive, disk health, restart needed.
     let mut details = vec![];
     if let Some(root) = h.disks.iter().find(|d| d.mount == "/") {
         details.push(format!(
@@ -1073,6 +1117,8 @@ fn health() -> CheckResult {
 /// Tile "File backup". Green when a real backup tool is set up (or the user says they back up
 /// another way) and the last known backup isn't older than [`crate::backup::STALE_DAYS`].
 fn backup() -> CheckResult {
+    // Without a backup the tile is yellow by default; a company policy can switch the
+    // requirement off (`require_backup = no`), then it stays green either way.
     let pol = crate::policy::get();
     let b = crate::backup::load();
     let ok = (b.configured() && !b.stale()) || !pol.require_backup;
@@ -1086,6 +1132,8 @@ fn backup() -> CheckResult {
     } else {
         "Your personal files are not backed up.".into()
     };
+    // Detail lines: "another way" if the user said so, and up to two backup tools with their
+    // last backup.
     let mut details = vec![];
     if b.other_way && !b.has_backup_tool() {
         details.push("You back up another way.".into());
@@ -1096,6 +1144,8 @@ fn backup() -> CheckResult {
             None => format!("{}: {}", t.name, t.detail),
         });
     }
+    // Without a (recent) backup: set up Kup (installing it first if needed), and let the user
+    // say they back up another way (which turns the tile green, see `settings.rs`).
     let mut actions = vec![];
     if !b.configured() || b.stale() {
         if b.kup_installed {

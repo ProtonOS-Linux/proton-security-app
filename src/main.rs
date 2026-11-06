@@ -347,6 +347,8 @@ impl App {
     /// Create the window state: theme, fonts, settings, and the listener that brings this
     /// window forward when the app is opened again.
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Window setup: SVG/PNG icons, the theme (forced by PROTON_SECURITY_THEME, otherwise the
+        // system's), fonts and colours.
         egui_extras::install_image_loaders(&cc.egui_ctx);
         match std::env::var("PROTON_SECURITY_THEME").as_deref() {
             Ok("light") => cc.egui_ctx.set_theme(egui::Theme::Light),
@@ -354,11 +356,14 @@ impl App {
             _ => {}
         }
         ui::setup_style(&cc.egui_ctx);
+        // The page to start on (`--firewall`…), and the single-instance server: when the app is
+        // started again (from the tray or the menu), the second copy sends its page here and quits.
         let page = page_from_arg(std::env::args().nth(1).as_deref());
         if let Some(listener) = INSTANCE_LISTENER.lock().unwrap().take() {
             let (slot, ctx) = (REQUESTED_PAGE.clone(), cc.egui_ctx.clone());
             std::thread::spawn(move || instance_server(listener, slot, ctx));
         }
+        // Everything else starts empty and is loaded in the background when first needed.
         Self {
             page,
             nav_choice: None,
@@ -581,6 +586,7 @@ impl App {
         if !self.confirm_restart {
             return;
         }
+        // A modal window: the user must answer before using the app again. Escape cancels.
         let (mut go, mut cancel) = (false, false);
         egui::Modal::new(egui::Id::unique("restart_confirm"))
             .frame(
@@ -626,6 +632,7 @@ impl App {
                     }
                 });
             });
+        // The restart itself goes through logind (no administrator password for the signed-in user).
         if go {
             self.confirm_restart = false;
             if !health::request_restart() {
@@ -680,6 +687,10 @@ impl App {
     /// the screen.
     fn poll(&mut self, ctx: &egui::Context) {
         self.fit_to_screen(ctx);
+        // Runs at the start of every frame: picks up results that background threads left in shared
+        // slots, so nothing slow ever happens on the window's thread.
+        //
+        // A security report finished writing: open it in the browser.
         let report = self.report_done.lock().unwrap().take();
         if let Some(r) = report {
             self.report_busy = false;
@@ -692,15 +703,18 @@ impl App {
                 Err(_) => {}
             }
         }
+        // A page hidden by the company policy can't stay open.
         if !self.page.visible() {
             self.page = Page::Home;
         }
+        // Another start of the app asked for a page (see `instance_server`).
         if let Some(p) = REQUESTED_PAGE.lock().unwrap().take() {
             if let Some(p) = p {
                 self.page = p;
             }
             self.refresh_checks(ctx);
         }
+        // First frame: start the checks for "Security at a glance".
         if !self.started {
             self.started = true;
             self.refresh_checks(ctx);
@@ -733,6 +747,7 @@ impl App {
                     PendingFw::Remove(r) => s.fw_rules.retain(|x| x.kind != r.kind),
                 });
             }
+            // What to do with the helper's answer depends on the task (see `AfterAdmin`).
             match after {
                 AfterAdmin::RefreshAll => {
                     self.refresh_checks(ctx);
@@ -815,6 +830,7 @@ impl App {
                 a.1 = AfterAdmin::Handled;
             }
         }
+        // Short messages at the bottom disappear after 5 seconds.
         if let Some((_, t)) = &self.toast
             && t.elapsed() > Duration::from_secs(5)
         {
@@ -948,6 +964,8 @@ impl App {
         if !task.visible {
             return;
         }
+        // The progress window of an administrator task: an icon for the state, a sentence, and the
+        // helper's output as it arrives (scrolled to the newest line). "Close" appears when done.
         let state = task.state();
         let title = task.title.clone();
         let log = task.log.lock().unwrap().clone();
@@ -1211,11 +1229,13 @@ impl eframe::App for App {
     /// Draw one frame: side menu, current page, then any dialogs on top.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Every frame: pick up background results, notice outside changes (tray, settings).
         self.poll(&ctx);
         self.watch_changes(&ctx);
         let dark = ui.visuals().dark_mode;
         self.narrow = ui.available_width() < 1060.0;
 
+        // The side menu: wide with names, or icons only when the window is narrow.
         egui::Panel::left("nav")
             .resizable(false)
             .exact_size(if self.nav_expanded() { 260.0 } else { 52.0 })
@@ -1227,6 +1247,8 @@ impl eframe::App for App {
             )
             .show(ui, |ui| self.nav(ui));
 
+        // The page. Devices, Home and Firewall manage their own scrolling (they have tables that
+        // fill the height); the others scroll as a whole, at most 1100 pixels wide.
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -1270,6 +1292,7 @@ impl eframe::App for App {
                 }
             });
 
+        // Windows on top of the page; each draws nothing unless it is open.
         self.admin_window(&ctx);
         self.create_restore_dialog(&ctx);
         self.confirm_dialog(&ctx);
@@ -1354,6 +1377,9 @@ fn instance_server(l: std::os::unix::net::UnixListener, slot: PageRequest, ctx: 
 /// `proton-security --diagnose`: print what every check sees, for bug reports.
 fn diagnose() {
     println!("{APP_NAME} {} diagnostics\n", env!("CARGO_PKG_VERSION"));
+    // Plain text for bug reports (`proton-security --diagnose`): what each check sees, without
+    // any secret. System restore gets the most detail because its detection (Snapper configs,
+    // schedules from systemd timers, cron or snapper's own) is the most involved.
     let st = restore::load();
     println!("== System restore");
     println!("root filesystem : {}", st.root_fs);
@@ -1408,6 +1434,7 @@ fn diagnose() {
             println!("{l}");
         }
     }
+    // Every tile: green/yellow, headline and detail lines.
     println!("\n== Checks");
     for r in checks::run_all() {
         println!(
@@ -1445,6 +1472,7 @@ fn diagnose() {
 /// - `--diagnose`: print diagnostics;
 /// - `--version`: print the version.
 fn main() -> eframe::Result {
+    // Modes without a window first.
     let arg = std::env::args().nth(1);
     match arg.as_deref() {
         Some("--tray") => std::process::exit(tray::run()),
@@ -1481,6 +1509,7 @@ fn main() -> eframe::Result {
         }
         _ => {}
     }
+    // Only one window: if the app is already open, ask it to show the page and stop here.
     if forward_to_running_instance(arg.as_deref()) {
         return Ok(());
     }

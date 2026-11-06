@@ -122,6 +122,9 @@ fn mount_source(mount: &str) -> Option<String> {
 pub fn load() -> DeviceSecurity {
     let mut disks = vec![];
     let mut seen = vec![];
+    // Encryption of the system drive and, if separate, /home: find the device each is mounted
+    // from and check whether it sits on an encrypted (LUKS) layer. The same device is only
+    // listed once (a /home folder on the system drive).
     for m in ["/", "/home"] {
         if let Some(dev) = mount_source(m) {
             if !dev.starts_with("/dev/") || seen.contains(&dev) {
@@ -151,6 +154,8 @@ pub fn load() -> DeviceSecurity {
             device: "/dev/mapper/luks-root".into(),
         }];
     }
+    // Swap space on a disk can hold copies of memory (passwords, open files), so it should be
+    // encrypted too. Swap in compressed RAM (zram) never reaches the disk and is ignored.
     let swaps: Vec<String> = sys::read("/proc/swaps")
         .unwrap_or_default()
         .lines()
